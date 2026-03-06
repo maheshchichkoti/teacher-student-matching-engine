@@ -15,7 +15,7 @@ venv/
 env/
 
 # DB dump (large file, not needed in repo)
-*.sql
+dump-*.sql
 
 # OS
 .DS_Store
