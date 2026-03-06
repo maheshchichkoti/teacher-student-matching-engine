@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Tulkka — Matching Engine Explainer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d0f18;
+      color: #dde3ed;
+      padding: 40px 20px;
+      line-height: 1.6;
+    }
+
+    .wrap { max-width: 1060px; margin: 0 auto; }
+
+    /* HEADER */
+    .hdr { text-align: center; margin-bottom: 16px; }
+    .hdr h1 { font-size: 2rem; font-weight: 800; color: #fff; }
+    .hdr .sub { font-size: 0.9rem; color: #64748b; margin-top: 6px; }
+    .hdr .badge-row { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+    .badge { font-size: 0.72rem; font-weight: 700; padding: 4px 12px; border-radius: 20px; letter-spacing: 0.5px; }
+    .badge-green  { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }
+    .badge-blue   { background: #0c1a3d; color: #93c5fd; border: 1px solid #2563eb; }
+    .badge-yellow { background: #1c1500; color: #fde68a; border: 1px solid #d97706; }
+
+    hr.div { border: none; border-top: 1px solid #1a2030; margin: 44px 0; }
+
+    /* SECTION TITLE */
+    .sec-title {
+      font-size: 1.1rem; font-weight: 700; color: #fff;
+      margin-bottom: 18px; display: flex; align-items: center; gap: 10px;
+    }
+    .sec-num {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: #1d4ed8; color: #fff; font-size: 0.75rem;
+      font-weight: 800; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    /* INFO BOX */
+    .info-box {
+      background: #0a1628; border: 1px solid #1e3a5f;
+      border-left: 4px solid #3b82f6;
+      border-radius: 8px; padding: 16px 20px;
+      font-size: 0.86rem; color: #bfdbfe;
+      margin-bottom: 28px; line-height: 1.8;
+    }
+    .info-box strong { color: #fff; }
+
+    .warn-box {
+      background: #1c1000; border: 1px solid #78350f;
+      border-left: 4px solid #f59e0b;
+      border-radius: 8px; padding: 14px 18px;
+      font-size: 0.84rem; color: #fde68a;
+      margin-bottom: 20px; line-height: 1.7;
+    }
+    .warn-box strong { color: #fff; }
+
+    .ok-box {
+      background: #052e16; border: 1px solid #166534;
+      border-left: 4px solid #22c55e;
+      border-radius: 8px; padding: 14px 18px;
+      font-size: 0.84rem; color: #bbf7d0;
+      margin-bottom: 20px; line-height: 1.7;
+    }
+    .ok-box strong { color: #fff; }
+
+    /* TABLE */
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; margin-bottom: 28px; }
+    th {
+      background: #0f172a; color: #94a3b8;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; padding: 10px 14px; text-align: left;
+      border-bottom: 1px solid #1e293b;
+    }
+    td { padding: 10px 14px; border-bottom: 1px solid #1a2030; vertical-align: top; color: #cbd5e1; }
+    tr:hover td { background: #0f172a; }
+    td code {
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 0.8rem; background: #1e293b; padding: 2px 7px;
+      border-radius: 4px; color: #7dd3fc;
+    }
+    td .real   { color: #4ade80; font-weight: 600; font-size: 0.75rem; }
+    td .hard   { color: #fbbf24; font-weight: 600; font-size: 0.75rem; }
+    td .skip   { color: #64748b; font-weight: 600; font-size: 0.75rem; }
+
+    /* FLOW */
+    .flow { display: flex; flex-direction: column; gap: 0; margin-bottom: 28px; }
+    .flow-step {
+      background: #0f172a; border: 1px solid #1e293b;
+      border-radius: 8px; padding: 16px 20px;
+      margin-bottom: 4px; position: relative;
+    }
+    .flow-step .step-label {
+      font-size: 0.68rem; font-weight: 800; letter-spacing: 1px;
+      text-transform: uppercase; margin-bottom: 6px;
+    }
+    .step-red    .step-label { color: #f87171; }
+    .step-blue   .step-label { color: #60a5fa; }
+    .step-green  .step-label { color: #4ade80; }
+    .step-purple .step-label { color: #c084fc; }
+    .flow-step h3 { font-size: 0.95rem; color: #fff; font-weight: 700; margin-bottom: 6px; }
+    .flow-step p  { font-size: 0.84rem; color: #94a3b8; }
+    .arrow { text-align: center; font-size: 1.2rem; color: #334155; margin: 2px 0; }
+
+    /* SCORE BARS */
+    .score-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 28px; }
+    @media (max-width: 600px) { .score-grid { grid-template-columns: 1fr; } }
+    .score-card {
+      background: #0f172a; border: 1px solid #1e293b;
+      border-radius: 8px; padding: 16px 18px;
+    }
+    .score-card .sc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .score-card .sc-name { font-size: 0.85rem; color: #e2e8f0; font-weight: 600; }
+    .score-card .sc-pct  { font-size: 1.1rem; color: #fff; font-weight: 800; }
+    .score-bar { height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    .score-fill { height: 100%; border-radius: 3px; }
+    .sc-desc { font-size: 0.78rem; color: #64748b; margin-top: 8px; }
+
+    /* SAMPLE OUTPUT */
+    .output-box {
+      background: #020617; border: 1px solid #1e293b;
+      border-radius: 8px; padding: 20px 24px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 0.8rem; color: #94a3b8; overflow-x: auto;
+      margin-bottom: 28px; white-space: pre;
+    }
+    .output-box .k  { color: #7dd3fc; }
+    .output-box .v  { color: #86efac; }
+    .output-box .n  { color: #fde68a; }
+    .output-box .s  { color: #f0abfc; }
+
+    /* ASSUMPTION LIST */
+    .assumption-list { list-style: none; margin-bottom: 28px; }
+    .assumption-list li {
+      padding: 10px 14px 10px 38px; position: relative;
+      border-bottom: 1px solid #1a2030; font-size: 0.85rem; color: #94a3b8;
+    }
+    .assumption-list li:last-child { border-bottom: none; }
+    .assumption-list li::before {
+      content: attr(data-n);
+      position: absolute; left: 10px;
+      font-size: 0.7rem; font-weight: 700; color: #475569;
+      top: 12px;
+    }
+    .assumption-list li strong { color: #e2e8f0; }
+    .assumption-list li .tag-hard   { color: #fbbf24; font-size: 0.72rem; font-weight: 700; margin-left: 6px; }
+    .assumption-list li .tag-real   { color: #4ade80; font-size: 0.72rem; font-weight: 700; margin-left: 6px; }
+    .assumption-list li .tag-skip   { color: #64748b; font-size: 0.72rem; font-weight: 700; margin-left: 6px; }
+
+    /* API block */
+    .api-block {
+      background: #020617; border: 1px solid #1e3a5f;
+      border-radius: 8px; padding: 18px 22px; margin-bottom: 28px;
+    }
+    .api-method { display: inline-block; background: #1d4ed8; color: #fff; font-size: 0.72rem; font-weight: 800; padding: 3px 10px; border-radius: 4px; margin-right: 8px; }
+    .api-url    { font-family: monospace; font-size: 0.88rem; color: #7dd3fc; }
+    .api-block pre { font-family: monospace; font-size: 0.8rem; color: #94a3b8; margin-top: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <h1>Tulkka — Matching Engine</h1>
+    <div class="sub">How it works · What data it uses · Where it comes from</div>
+    <div class="badge-row">
+      <span class="badge badge-green">Rule-Based MVP</span>
+      <span class="badge badge-blue">MySQL Live DB</span>
+      <span class="badge badge-yellow">11s Response Time</span>
+    </div>
+  </div>
+
+  <hr class="div"/>
+
+  <!-- SECTION 1: WHAT IT DOES -->
+  <div class="sec-title"><span class="sec-num">1</span> What does it do?</div>
+  <div class="info-box">
+    Before this: ops team manually searched for a teacher when a new student signed up — took ~10 minutes per student.<br/><br/>
+    Now: call one API with a <strong>student_id</strong> + their preferred schedule → get back <strong>top 3 teachers</strong> ranked by match score in <strong>~11 seconds</strong>.<br/><br/>
+    Each result includes the teacher's <strong>match score</strong>, <strong>trial conversion rate</strong>, <strong>lesson quality score</strong>, and their <strong>available time slots</strong> that match the student's schedule.
+  </div>
+
+  <hr class="div"/>
+
+  <!-- SECTION 2: 3-STEP FLOW -->
+  <div class="sec-title"><span class="sec-num">2</span> How matching works — 3 steps</div>
+
+  <div class="flow">
+    <div class="flow-step step-red">
+      <div class="step-label">Step 1 — Hard Filter</div>
+      <h3>Remove ineligible teachers</h3>
+      <p>Only keep teachers where <code>status = 'active'</code> and <code>language = 'EN'</code> (teaching English). Teachers with HE or AR as teaching language are excluded. This is the gate — if a teacher doesn't pass, they never get scored.</p>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-step step-blue">
+      <div class="step-label">Step 2 — Availability Check</div>
+      <h3>Find teachers with matching slots</h3>
+      <p>Check each teacher's weekly recurring slots (from <code>teacher_availability</code> table — stored as JSON per day). Filter slots that fall within the student's preferred days and time range. Teachers with zero matching slots are dropped.</p>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-step step-green">
+      <div class="step-label">Step 3 — Scoring</div>
+      <h3>Rank remaining teachers by match score</h3>
+      <p>Each teacher gets a weighted score from 5 components (see Section 4). Sort descending. Return top 3.</p>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="flow-step step-purple">
+      <div class="step-label">Output</div>
+      <h3>Top 3 teachers + available slots</h3>
+      <p>Each result shows: name, match score %, trial conversion rate, lesson quality score, available slots, current students, free capacity.</p>
+    </div>
+  </div>
+
+  <hr class="div"/>
+
+  <!-- SECTION 3: DATA SOURCES -->
+  <div class="sec-title"><span class="sec-num">3</span> What data is used — and where it comes from</div>
+
+  <div class="ok-box">
+    <strong>Mahesh confirmed:</strong> Only two things are missing from DB — student preferred schedule + student goal at signup. Everything else below is real data pulled from MySQL live DB.
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Data Point</th>
+        <th>DB Table</th>
+        <th>Column</th>
+        <th>Rows Available</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Teacher teaching language</td>
+        <td><code>users</code></td>
+        <td><code>language</code></td>
+        <td>106 / 129 teachers</td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Teacher active status</td>
+        <td><code>users</code></td>
+        <td><code>status = 'active'</code></td>
+        <td>97 active teachers</td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Teacher weekly availability</td>
+        <td><code>teacher_availability</code></td>
+        <td><code>mon, tue, wed, thu, fri, sat, sun</code></td>
+        <td>200 teachers</td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Trial conversion rate</td>
+        <td><code>trial_class_registrations</code></td>
+        <td><code>status = 'converted'</code> / total</td>
+        <td>10,569 trial records</td>
+        <td><span class="real">REAL (computed)</span></td>
+      </tr>
+      <tr>
+        <td>Lesson quality score</td>
+        <td><code>lesson_feedbacks</code></td>
+        <td><code>grammar_rate, pronunciation_rate, speaking_rate</code></td>
+        <td>101,571 rows</td>
+        <td><span class="real">REAL (avg)</span></td>
+      </tr>
+      <tr>
+        <td>Current students per teacher</td>
+        <td><code>classes</code></td>
+        <td><code>teacher_id</code> where status in (pending, started, ended)</td>
+        <td>All classes</td>
+        <td><span class="real">REAL (computed)</span></td>
+      </tr>
+      <tr>
+        <td>Student native language</td>
+        <td><code>users</code></td>
+        <td><code>language</code></td>
+        <td>6,313 / 6,466 students</td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Student learning goal</td>
+        <td><code>classes</code></td>
+        <td><code>student_goal</code> (most recent class)</td>
+        <td>27,310 classes have it</td>
+        <td><span class="real">REAL (new students → hardcoded default)</span></td>
+      </tr>
+      <tr>
+        <td>Student preferred days</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Not in DB</td>
+        <td><span class="hard">HARDCODED (from request)</span></td>
+      </tr>
+      <tr>
+        <td>Student preferred time</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Not in DB</td>
+        <td><span class="hard">HARDCODED (from request)</span></td>
+      </tr>
+      <tr>
+        <td>Teacher max capacity</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Not in DB</td>
+        <td><span class="hard">HARDCODED = 20 (coming from teacher form)</span></td>
+      </tr>
+      <tr>
+        <td>Teacher tags / teaching style</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Not in DB</td>
+        <td><span class="skip">SKIPPED (coming from teacher form)</span></td>
+      </tr>
+      <tr>
+        <td>Student English level matching</td>
+        <td><code>users</code></td>
+        <td><code>student_level</code></td>
+        <td>1,354 / 6,466 students</td>
+        <td><span class="skip">SKIPPED (data too sparse)</span></td>
+      </tr>
+      <tr>
+        <td>Teacher native language matching</td>
+        <td><code>users</code></td>
+        <td><code>native_language</code></td>
+        <td>0 populated</td>
+        <td><span class="skip">SKIPPED (no data)</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr class="div"/>
+
+  <!-- SECTION 4: SCORING -->
+  <div class="sec-title"><span class="sec-num">4</span> Scoring — how the match % is calculated</div>
+
+  <div class="info-box">
+    Weights match the spec exactly. Each component is normalized to 0–1 before weighting.
+  </div>
+
+  <div class="score-grid">
+    <div class="score-card">
+      <div class="sc-top">
+        <span class="sc-name">Student Fit</span>
+        <span class="sc-pct">30%</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:30%;background:#3b82f6;"></div></div>
+      <div class="sc-desc">Language match (70%) + level match (30%). Level is neutral (0.5) until data is available. Language fit = 1.0 for all EN teachers.</div>
+    </div>
+    <div class="score-card">
+      <div class="sc-top">
+        <span class="sc-name">Availability Fit</span>
+        <span class="sc-pct">25%</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:25%;background:#22c55e;"></div></div>
+      <div class="sc-desc">Number of matching slots ÷ 5. 5+ matching slots = 100%. Fewer slots = lower score.</div>
+    </div>
+    <div class="score-card">
+      <div class="sc-top">
+        <span class="sc-name">Teacher Performance</span>
+        <span class="sc-pct">20%</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:20%;background:#f59e0b;"></div></div>
+      <div class="sc-desc">Trial conversion rate (60%) + lesson quality score (40%). Both from real DB data. Conversion from <code>trial_class_registrations</code>. Quality from <code>lesson_feedbacks</code>.</div>
+    </div>
+    <div class="score-card">
+      <div class="sc-top">
+        <span class="sc-name">Recurring Compatibility</span>
+        <span class="sc-pct">15%</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:15%;background:#a855f7;"></div></div>
+      <div class="sc-desc">How many of the student's preferred days are covered. 2 days requested + teacher has both = 100%.</div>
+    </div>
+    <div class="score-card">
+      <div class="sc-top">
+        <span class="sc-name">Teacher Capacity</span>
+        <span class="sc-pct">10%</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:10%;background:#ef4444;"></div></div>
+      <div class="sc-desc">Free slots = MAX_CAPACITY (20) − current_students. Teachers near full load get a lower score. Distributes students evenly.</div>
+    </div>
+  </div>
+
+  <hr class="div"/>
+
+  <!-- SECTION 5: DB QUERIES -->
+  <div class="sec-title"><span class="sec-num">5</span> DB queries — all batched, 5 total per request</div>
+
+  <div class="info-box">
+    Performance optimization: instead of querying per-teacher (97 individual queries), all data is fetched in 5 batch queries before the scoring loop. This brought response time from ~113s to <strong>11s</strong>.
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Query</th><th>Purpose</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>SELECT id, full_name, language FROM users WHERE role_name='teacher' AND status='active'</code></td>
+        <td>Hard filter — active EN teachers</td>
+        <td>82 eligible teachers</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><code>SELECT teacher_id, SUM(status='converted')/COUNT(*) FROM trial_class_registrations GROUP BY teacher_id</code></td>
+        <td>Real conversion rates for all teachers</td>
+        <td>Map: teacher_id → conv%</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><code>SELECT teacher_id, AVG((grammar+pronunciation+speaking)/3) FROM lesson_feedbacks GROUP BY teacher_id</code></td>
+        <td>Real lesson quality for all teachers</td>
+        <td>Map: teacher_id → quality%</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><code>SELECT teacher_id, COUNT(DISTINCT student_id) FROM classes WHERE status IN (...) GROUP BY teacher_id</code></td>
+        <td>Current student load per teacher</td>
+        <td>Map: teacher_id → count</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><code>SELECT user_id, mon,tue,wed,thu,fri,sat,sun FROM teacher_availability WHERE user_id IN (...)</code></td>
+        <td>Weekly availability for all eligible teachers in one shot</td>
+        <td>Map: teacher_id → slots JSON</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr class="div"/>
+
+  <!-- SECTION 6: API -->
+  <div class="sec-title"><span class="sec-num">6</span> API — how to call it</div>
+
+  <div class="api-block">
+    <div>
+      <span class="api-method">POST</span>
+      <span class="api-url">http://localhost:5000/match</span>
+    </div>
+    <pre>Request body:
+{
+  "student_id": 930,
+  "preferred_days": ["Sunday", "Tuesday"],
+  "preferred_time_from": "16:00",
+  "preferred_time_to": "21:00",
+  "mode": "trial"
+}
+
+student_id     → fetches real student data from DB (name, language, learning goal)
+preferred_days → days agent tells us student can do (not in DB yet)
+preferred_time → time range agent tells us (not in DB yet)
+mode           → "trial" or "subscription"</pre>
+  </div>
+
+  <!-- SECTION 6b: SAMPLE OUTPUT -->
+  <div class="sec-title"><span class="sec-num">7</span> Sample output — real response from live DB</div>
+
+  <div class="output-box"><span class="k">{
+  "student_id":</span> <span class="n">930</span><span class="k">,
+  "student_name":</span> <span class="s">"Jade Harrison"</span><span class="k">,
+  "student_native_language":</span> <span class="s">"EN"</span><span class="k">,
+  "student_learning_goal":</span> <span class="s">"improve_conversation"</span><span class="k">,
+  "mode":</span> <span class="s">"trial"</span><span class="k">,
+  "preferred_time":</span> <span class="s">"16:00 - 21:00"</span><span class="k">,
+  "teachers_found":</span> <span class="n">3</span><span class="k">,
+  "results":</span> <span class="k">[</span>
+    <span class="k">{
+      "name":</span> <span class="s">"amit beinish"</span><span class="k">,
+      "match_score":</span> <span class="n">77.5</span><span class="k">,
+      "trial_conversion_rate":</span> <span class="n">0.0</span><span class="k">,
+      "lesson_quality_score":</span> <span class="n">43.3</span><span class="k">,
+      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 16:00"</span><span class="k">,</span> <span class="s">"Sunday 16:30"</span><span class="k">,</span> <span class="s">"Sunday 17:00"</span><span class="k">],
+      "current_students":</span> <span class="n">3</span><span class="k">,
+      "free_capacity":</span> <span class="n">17</span>
+    <span class="k">},
+    {
+      "name":</span> <span class="s">"Teacher Dimple"</span><span class="k">,
+      "match_score":</span> <span class="n">77.2</span><span class="k">,
+      "trial_conversion_rate":</span> <span class="n">5.9</span><span class="k">,
+      "lesson_quality_score":</span> <span class="n">37.5</span><span class="k">,
+      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 17:00"</span><span class="k">,</span> <span class="s">"Sunday 17:30"</span><span class="k">,</span> <span class="s">"Sunday 18:00"</span><span class="k">],
+      "current_students":</span> <span class="n">4</span><span class="k">,
+      "free_capacity":</span> <span class="n">16</span>
+    <span class="k">},
+    {
+      "name":</span> <span class="s">"Teacher Abdalla"</span><span class="k">,
+      "match_score":</span> <span class="n">77.2</span><span class="k">,
+      "trial_conversion_rate":</span> <span class="n">14.3</span><span class="k">,
+      "lesson_quality_score":</span> <span class="n">0.0</span><span class="k">,
+      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 17:30"</span><span class="k">,</span> <span class="s">"Sunday 18:00"</span><span class="k">,</span> <span class="s">"Sunday 18:30"</span><span class="k">],
+      "current_students":</span> <span class="n">0</span><span class="k">,
+      "free_capacity":</span> <span class="n">20</span>
+    <span class="k">}
+  ]
+}</span></div>
+
+  <hr class="div"/>
+
+  <!-- SECTION 8: ASSUMPTIONS -->
+  <div class="sec-title"><span class="sec-num">8</span> Assumptions &amp; limitations</div>
+
+  <div class="warn-box">
+    <strong>Only 2 things are hardcoded</strong> per Mahesh's confirmation — student preferred schedule and student goal at signup. Everything else is real DB data.
+  </div>
+
+  <ul class="assumption-list">
+    <li data-n="1"><strong>preferred_days / preferred_time</strong> <span class="tag-hard">HARDCODED</span> — passed in request body. Not captured at student signup yet. Mobile team needs to add these questions at onboarding.</li>
+    <li data-n="2"><strong>Student learning goal (new students)</strong> <span class="tag-hard">HARDCODED</span> — defaults to <code>"improve_conversation"</code> for students with no prior classes. For returning students, real goal is fetched from <code>classes.student_goal</code>.</li>
+    <li data-n="3"><strong>MAX_CAPACITY = 20</strong> <span class="tag-hard">HARDCODED</span> — teacher max capacity not in DB. Will be updated once teacher form data is imported.</li>
+    <li data-n="4"><strong>trial_conversion_rate</strong> <span class="tag-real">REAL</span> — computed live from <code>trial_class_registrations</code> (status = 'converted' / total). The <code>users.trial_conversion_rate</code> column was mostly 0 so not used.</li>
+    <li data-n="5"><strong>lesson_quality_score</strong> <span class="tag-real">REAL</span> — average of grammar_rate + pronunciation_rate + speaking_rate from <code>lesson_feedbacks</code> (101,571 rows). Normalized to 0–100.</li>
+    <li data-n="6"><strong>Language hard filter</strong> — teachers with <code>language = 'HE'</code> or <code>'AR'</code> are excluded. Only EN teachers shown (Tulkka is an English learning platform). Teachers with NULL language are included (assumed EN).</li>
+    <li data-n="7"><strong>Teacher tags / teaching style</strong> <span class="tag-skip">SKIPPED</span> — not in DB. Will be added after teacher form responses are imported to DB.</li>
+    <li data-n="8"><strong>Teacher native language matching</strong> <span class="tag-skip">SKIPPED</span> — <code>native_language</code> column exists in users but 0 rows populated. Will enable once teacher form data imported.</li>
+    <li data-n="9"><strong>Student level matching</strong> <span class="tag-skip">SKIPPED</span> — only 1,354 / 6,466 students have <code>student_level</code> populated. Too sparse to use in scoring. Level fit set to 0.5 (neutral) for all.</li>
+    <li data-n="10"><strong>current_students count</strong> — counted from <code>classes</code> with status in (pending, started, ended). May slightly overcount if old ended classes are included. Can add date filter later.</li>
+    <li data-n="11"><strong>One-time availability (trial slots)</strong> <span class="tag-skip">SKIPPED</span> — spec mentions a separate one-time calendar from cancellations. Not implemented. Using recurring calendar for both trial and subscription mode in demo.</li>
+    <li data-n="12"><strong>Returns top 3</strong> — Vinay said "top 2 or top 3 at most". Change <code>results[:3]</code> to <code>results[:5]</code> in <code>matching_engine.py</code> to return up to 5.</li>
+  </ul>
+
+  <hr class="div"/>
+
+  <!-- SECTION 9: WHAT'S NEXT -->
+  <div class="sec-title"><span class="sec-num">9</span> What unlocks better matching (next steps)</div>
+
+  <table>
+    <thead>
+      <tr><th>What</th><th>How it unlocks</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Teacher form responses imported to DB</td>
+        <td>Enables: native language matching, teacher tags scoring, real max capacity</td>
+        <td>Teacher Google Form → import to MySQL</td>
+      </tr>
+      <tr>
+        <td>Student preferred schedule at signup</td>
+        <td>Removes the only hardcoded input — fully automatic from student_id</td>
+        <td>Mobile team adds fields at onboarding</td>
+      </tr>
+      <tr>
+        <td>Rating table (teacher↔student)</td>
+        <td>Adds post-trial feedback signal — "continue with this teacher?" as training label for ML later</td>
+        <td>Vinay asked for this in meeting 2</td>
+      </tr>
+      <tr>
+        <td>Trial outcome stored per class</td>
+        <td>Per-class conversion label → enables ML training data</td>
+        <td>Add <code>trial_converted</code> bool to classes table</td>
+      </tr>
+      <tr>
+        <td>ML layer (LightGBM LambdaRank)</td>
+        <td>Learns which teacher–student pairs actually work — replaces scoring formula</td>
+        <td>After enough trial outcome data is collected</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="text-align:center;margin-top:48px;font-size:0.75rem;color:#334155;">
+    Tulkka / SahioNext &nbsp;·&nbsp; Matching Engine v1.0 &nbsp;·&nbsp; Built March 2026
+  </div>
+
+</div>
+</body>
+</html>
