@@ -116,6 +116,45 @@ def fetch_all_student_counts(conn):
     return {r[0]: r[1] for r in rows}
 
 
+def fetch_student_preferences(conn, student_id):
+    """Fetch student preferences from student_preferences table. Returns {} if not filled yet."""
+    _, rows = q(conn, """
+        SELECT language_preference, temperament, corrective_tolerance,
+               scaffolding_preference, preferred_gadget, hobbies
+        FROM student_preferences WHERE user_id = %s
+    """, (student_id,))
+    if not rows:
+        return {}
+    r = rows[0]
+    return {
+        "language_preference":  r[0],
+        "temperament":          r[1],
+        "corrective_tolerance": r[2],
+        "scaffolding_preference": r[3],
+        "preferred_gadget":     r[4],
+        "hobbies":              r[5],
+    }
+
+
+def fetch_all_teacher_profiles(conn, teacher_ids):
+    """Fetch teacher profiles for all teachers in one query."""
+    if not teacher_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(teacher_ids))
+    _, rows = q(conn, f"""
+        SELECT user_id, teaching_style, correction_style, scaffolding_style,
+               language_support, max_students
+        FROM teacher_profile WHERE user_id IN ({placeholders})
+    """, tuple(teacher_ids))
+    return {r[0]: {
+        "teaching_style":   r[1],
+        "correction_style": r[2],
+        "scaffolding_style": r[3],
+        "language_support": r[4],
+        "max_students":     r[5],
+    } for r in rows}
+
+
 def fetch_all_availability(conn, teacher_ids):
     """Fetch availability for all teachers in one query."""
     if not teacher_ids:
@@ -160,14 +199,57 @@ def get_matching_slots(availability, preferred_days, time_from, time_to):
     return slots
 
 
-def compute_score(student, slots, conv_rate, quality_score, current_students, preferred_days):
+def _pref_match(student_val, teacher_val, match_map=None):
+    """
+    Compare one student preference against teacher value.
+    Returns 1.0 (match), 0.3 (mismatch), or 0.5 (neutral — data missing).
+    match_map: optional dict for cross-field matching (e.g. temperament → teaching_style).
+    """
+    if not student_val or not teacher_val:
+        return 0.5  # neutral — data not collected yet
+    if match_map:
+        return 1.0 if match_map.get(student_val) == teacher_val else 0.3
+    return 1.0 if student_val == teacher_val else 0.3
+
+
+def compute_student_fit(student_prefs, teacher_profile):
+    """
+    Student Fit (30%): compares student preferences against teacher profile.
+    All fields default to 0.5 (neutral) when data is missing.
+    Once mobile team + teacher form data starts flowing in, this becomes real.
+    """
+    scores = [
+        # Language preference: does student want English-only or need Hebrew/Arabic help?
+        _pref_match(
+            student_prefs.get("language_preference"),
+            teacher_profile.get("language_support")
+        ),
+        # Temperament: energetic student → perky teacher, calm student → business_like teacher
+        _pref_match(
+            student_prefs.get("temperament"),
+            teacher_profile.get("teaching_style"),
+            match_map={"energetic": "perky", "calm": "business_like"}
+        ),
+        # Corrective tolerance: student wants direct/indirect correction → teacher style
+        _pref_match(
+            student_prefs.get("corrective_tolerance"),
+            teacher_profile.get("correction_style")
+        ),
+        # Scaffolding: student wants quick answers (high) or to think it out (low)
+        _pref_match(
+            student_prefs.get("scaffolding_preference"),
+            teacher_profile.get("scaffolding_style")
+        ),
+    ]
+    return sum(scores) / len(scores)
+
+
+def compute_score(student_prefs, teacher_profile, slots, conv_rate, quality_score, current_students, preferred_days):
     """
     Spec weights: 30% student fit / 25% availability / 20% performance / 15% recurring / 10% capacity
     """
-    # Student Fit (30%): language match + level match
-    # Language fit = 1.0 (all EN teachers match — Tulkka is English learning platform)
-    # Level fit = 0.5 neutral (sparse data)
-    student_fit = 1.0 * 0.7 + 0.5 * 0.3
+    # Student Fit (30%): preference matching (neutral 0.5 per field until data exists)
+    student_fit = compute_student_fit(student_prefs, teacher_profile)
 
     # Availability Fit (25%): number of matching slots (5+ = max)
     avail_fit = min(len(slots) / 5.0, 1.0)
@@ -179,8 +261,9 @@ def compute_score(student, slots, conv_rate, quality_score, current_students, pr
     days_covered = len(set(s.split(" ")[0] for s in slots))
     recurring = min(days_covered / max(len(preferred_days), 1), 1.0)
 
-    # Capacity (10%): free slots
-    capacity = min(max(MAX_CAPACITY - current_students, 0) / MAX_CAPACITY, 1.0)
+    # Capacity (10%): free slots (uses teacher's own max if set, else default 20)
+    max_cap = teacher_profile.get("max_students") or MAX_CAPACITY
+    capacity = min(max(max_cap - current_students, 0) / max_cap, 1.0)
 
     total = (
         student_fit * 0.30 +
@@ -225,7 +308,8 @@ def match():
     conn = get_db()
 
     # Fetch student real data from DB
-    student = fetch_student(conn, student_id) if student_id else None
+    student      = fetch_student(conn, student_id) if student_id else None
+    student_prefs = fetch_student_preferences(conn, student_id) if student_id else {}
 
     # Step 1: Active teachers (hard filter: English teaching language)
     all_teachers = fetch_all_teachers(conn)
@@ -234,28 +318,31 @@ def match():
 
     teacher_ids = [t[0] for t in eligible]
 
-    # Batch fetch all data in 4 queries total
-    conv_map   = fetch_all_conversion_rates(conn)
-    qual_map   = fetch_all_quality_scores(conn)
-    stud_map   = fetch_all_student_counts(conn)
-    avail_map  = fetch_all_availability(conn, teacher_ids)
+    # Batch fetch all data in 6 queries total
+    conv_map     = fetch_all_conversion_rates(conn)
+    qual_map     = fetch_all_quality_scores(conn)
+    stud_map     = fetch_all_student_counts(conn)
+    avail_map    = fetch_all_availability(conn, teacher_ids)
+    profile_map  = fetch_all_teacher_profiles(conn, teacher_ids)
 
     conn.close()
 
     # Step 2 + 3: Availability check + Scoring
     results = []
     for tid, name, lang in eligible:
-        availability = avail_map.get(tid, {})
+        availability   = avail_map.get(tid, {})
         slots = get_matching_slots(availability, preferred_days, time_from, time_to)
         if not slots:
             continue
 
-        conv_rate     = conv_map.get(tid, 0.0)
-        quality_score = qual_map.get(tid, 0.0)
-        current_stud  = stud_map.get(tid, 0)
+        conv_rate      = conv_map.get(tid, 0.0)
+        quality_score  = qual_map.get(tid, 0.0)
+        current_stud   = stud_map.get(tid, 0)
+        teacher_profile = profile_map.get(tid, {})
 
-        score = compute_score(student or {}, slots, conv_rate, quality_score, current_stud, preferred_days)
+        score = compute_score(student_prefs, teacher_profile, slots, conv_rate, quality_score, current_stud, preferred_days)
 
+        max_cap = teacher_profile.get("max_students") or MAX_CAPACITY
         results.append({
             "teacher_id":            tid,
             "name":                  name,
@@ -265,7 +352,7 @@ def match():
             "lesson_quality_score":  quality_score,
             "available_slots":       slots[:5],
             "current_students":      current_stud,
-            "free_capacity":         max(MAX_CAPACITY - current_stud, 0),
+            "free_capacity":         max(max_cap - current_stud, 0),
         })
 
     results.sort(key=lambda x: x["match_score"], reverse=True)
@@ -322,9 +409,14 @@ if __name__ == "__main__":
 # 7. student_level matching — skipped. Only 1354/6466 students have it.
 #    Level fit set to neutral (0.5).
 #
-# 8. teacher_tags / teaching_style — not in DB. Skipped until teacher form imported.
+# 8. Student preferences (hobbies, temperament, language_preference, corrective_tolerance,
+#    scaffolding_preference, preferred_gadget) — schema ready (preferences_migration.sql).
+#    All default to 0.5 neutral until mobile team adds questions at signup.
 #
-# 9. MAX_CAPACITY = 20 — not in DB. Update once teacher form data is imported.
+# 9. Teacher profile (teaching_style, correction_style, scaffolding_style, language_support,
+#    max_students) — schema ready (preferences_migration.sql).
+#    All default to 0.5 neutral until teachers fill their form.
+#    MAX_CAPACITY = 20 used as fallback until teacher sets their own max.
 #
 # 10. current_students from classes with status in (pending, started, ended).
 #
