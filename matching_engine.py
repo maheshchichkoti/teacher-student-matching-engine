@@ -1,24 +1,30 @@
 """
-Tulkka — Rule-Based Teacher-Student Matching Engine
+Tulkka — Rule-Based Teacher-Student Matching Engine (FastAPI Version)
 ----------------------------------------------------
 Endpoint: POST /match
 Input : student_id + preferred_days + preferred_time (days/time hardcoded for demo — only missing data per Mahesh)
 Output: top 3 teachers ranked by match score + available slots
 
-Run:  python matching_engine.py
+Run:  uvicorn matching_engine_fastapi:app --reload --port 5000
 Test: curl -X POST http://localhost:5000/match -H "Content-Type: application/json"
       -d '{"student_id": 930, "preferred_days": ["Sunday","Tuesday"], "preferred_time_from": "16:00", "preferred_time_to": "21:00", "mode": "trial"}'
 """
 
 import json
 import os
-from flask import Flask, request, jsonify
+from typing import List, Optional
+from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
 import mysql.connector
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
+app = FastAPI(
+    title="Tulkka Matching Engine",
+    description="Rule-based teacher-student matching API",
+    version="1.0.0"
+)
 
 DB_CONFIG = {
     "host":                os.getenv("DB_HOST", "3.124.111.213"),
@@ -37,7 +43,44 @@ DAY_MAP = {
     "wednesday": "wed", "thursday": "thu", "friday": "fri", "saturday": "sat",
 }
 
-MAX_CAPACITY = 20  # teacher max capacity not in DB yet (coming from teacher form import)
+MAX_CAPACITY = 20
+
+
+# Pydantic Models for Request/Response
+class MatchRequest(BaseModel):
+    student_id: Optional[int] = None
+    preferred_days: List[str] = Field(..., description="List of preferred days")
+    preferred_time_from: str = Field(default="16:00", description="Preferred start time (HH:MM)")
+    preferred_time_to: str = Field(default="21:00", description="Preferred end time (HH:MM)")
+    mode: str = Field(default="trial", description="Mode: trial or subscription")
+
+
+class TeacherResult(BaseModel):
+    teacher_id: int
+    name: str
+    teaching_language: str
+    match_score: float
+    trial_conversion_rate: float
+    lesson_quality_score: float
+    available_slots: List[str]
+    current_students: int
+    free_capacity: int
+
+
+class MatchResponse(BaseModel):
+    student_id: Optional[int]
+    student_name: Optional[str]
+    student_native_language: Optional[str]
+    student_learning_goal: Optional[str]
+    mode: str
+    preferred_days: List[str]
+    preferred_time: str
+    teachers_found: int
+    results: List[TeacherResult]
+
+
+class HealthResponse(BaseModel):
+    status: str
 
 
 def get_db():
@@ -276,153 +319,120 @@ def compute_score(student_prefs, teacher_profile, slots, conv_rate, quality_scor
 
 
 # ─────────────────────────────────────────────
-# API
+# API Endpoints
 # ─────────────────────────────────────────────
 
-@app.route("/match", methods=["POST"])
-def match():
+@app.post("/match", response_model=MatchResponse)
+async def match(request: MatchRequest):
     """
-    {
-        "student_id": 930,
-        "preferred_days": ["Sunday", "Tuesday"],
-        "preferred_time_from": "16:00",
-        "preferred_time_to": "21:00",
-        "mode": "trial"
-    }
-    preferred_days/time are passed in request — not in DB yet (Mahesh confirmed missing).
-    Everything else is real data from DB.
+    Match teachers to a student based on preferences and availability.
+
+    - **student_id**: Optional student ID (if None, returns all teachers without student-specific filtering)
+    - **preferred_days**: List of preferred days (e.g., ["Sunday", "Tuesday"])
+    - **preferred_time_from**: Preferred start time (HH:MM format)
+    - **preferred_time_to**: Preferred end time (HH:MM format)
+    - **mode**: "trial" or "subscription"
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "JSON body required"}), 400
-
-    student_id     = data.get("student_id")
-    preferred_days = data.get("preferred_days", [])
-    time_from      = data.get("preferred_time_from", "16:00")
-    time_to        = data.get("preferred_time_to", "21:00")
-    mode           = data.get("mode", "trial")
-
-    if not preferred_days:
-        return jsonify({"error": "preferred_days is required"}), 400
+    if not request.preferred_days:
+        raise HTTPException(status_code=400, detail="preferred_days is required")
 
     conn = get_db()
 
-    # Fetch student real data from DB
-    student      = fetch_student(conn, student_id) if student_id else None
-    student_prefs = fetch_student_preferences(conn, student_id) if student_id else {}
+    try:
+        # Fetch student real data from DB
+        student = fetch_student(conn, request.student_id) if request.student_id else None
+        student_prefs = fetch_student_preferences(conn, request.student_id) if request.student_id else {}
 
-    # Step 1: Active teachers (hard filter: English teaching language)
-    all_teachers = fetch_all_teachers(conn)
-    eligible = [(tid, name, lang) for tid, name, lang in all_teachers
-                if (lang or "EN").upper() in ("EN", "")]
+        # Step 1: Active teachers (hard filter: English teaching language)
+        all_teachers = fetch_all_teachers(conn)
+        eligible = [(tid, name, lang) for tid, name, lang in all_teachers
+                    if (lang or "EN").upper() in ("EN", "")]
 
-    teacher_ids = [t[0] for t in eligible]
+        teacher_ids = [t[0] for t in eligible]
 
-    # Batch fetch all data in 6 queries total
-    conv_map     = fetch_all_conversion_rates(conn)
-    qual_map     = fetch_all_quality_scores(conn)
-    stud_map     = fetch_all_student_counts(conn)
-    avail_map    = fetch_all_availability(conn, teacher_ids)
-    profile_map  = fetch_all_teacher_profiles(conn, teacher_ids)
+        # Batch fetch all data in 6 queries total
+        conv_map     = fetch_all_conversion_rates(conn)
+        qual_map     = fetch_all_quality_scores(conn)
+        stud_map     = fetch_all_student_counts(conn)
+        avail_map    = fetch_all_availability(conn, teacher_ids)
+        profile_map  = fetch_all_teacher_profiles(conn, teacher_ids)
 
-    conn.close()
+        # Step 2 + 3: Availability check + Scoring
+        results = []
+        for tid, name, lang in eligible:
+            availability   = avail_map.get(tid, {})
+            slots = get_matching_slots(availability, request.preferred_days, request.preferred_time_from, request.preferred_time_to)
+            if not slots:
+                continue
 
-    # Step 2 + 3: Availability check + Scoring
-    results = []
-    for tid, name, lang in eligible:
-        availability   = avail_map.get(tid, {})
-        slots = get_matching_slots(availability, preferred_days, time_from, time_to)
-        if not slots:
-            continue
+            conv_rate      = conv_map.get(tid, 0.0)
+            quality_score  = qual_map.get(tid, 0.0)
+            current_stud   = stud_map.get(tid, 0)
+            teacher_profile = profile_map.get(tid, {})
 
-        conv_rate      = conv_map.get(tid, 0.0)
-        quality_score  = qual_map.get(tid, 0.0)
-        current_stud   = stud_map.get(tid, 0)
-        teacher_profile = profile_map.get(tid, {})
+            score = compute_score(student_prefs, teacher_profile, slots, conv_rate, quality_score, current_stud, request.preferred_days)
 
-        score = compute_score(student_prefs, teacher_profile, slots, conv_rate, quality_score, current_stud, preferred_days)
+            max_cap = teacher_profile.get("max_students") or MAX_CAPACITY
+            results.append({
+                "teacher_id":            tid,
+                "name":                  name,
+                "teaching_language":     lang or "EN",
+                "match_score":           score,
+                "trial_conversion_rate": conv_rate,
+                "lesson_quality_score":  quality_score,
+                "available_slots":       slots[:5],
+                "current_students":      current_stud,
+                "free_capacity":         max(max_cap - current_stud, 0),
+            })
 
-        max_cap = teacher_profile.get("max_students") or MAX_CAPACITY
-        results.append({
-            "teacher_id":            tid,
-            "name":                  name,
-            "teaching_language":     lang or "EN",
-            "match_score":           score,
-            "trial_conversion_rate": conv_rate,
-            "lesson_quality_score":  quality_score,
-            "available_slots":       slots[:5],
-            "current_students":      current_stud,
-            "free_capacity":         max(max_cap - current_stud, 0),
-        })
+        results.sort(key=lambda x: x["match_score"], reverse=True)
+        top = results[:3]
 
-    results.sort(key=lambda x: x["match_score"], reverse=True)
-    top = results[:3]
-
-    return jsonify({
-        "student_id":              student_id,
-        "student_name":            student["name"] if student else None,
-        "student_native_language": student["native_language"] if student else None,
-        "student_learning_goal":   student["learning_goal"] if student else None,
-        "mode":                    mode,
-        "preferred_days":          preferred_days,
-        "preferred_time":          f"{time_from} - {time_to}",
-        "teachers_found":          len(top),
-        "results":                 top,
-    })
+        return {
+            "student_id":              request.student_id,
+            "student_name":            student["name"] if student else None,
+            "student_native_language": student["native_language"] if student else None,
+            "student_learning_goal":   student["learning_goal"] if student else None,
+            "mode":                    request.mode,
+            "preferred_days":          request.preferred_days,
+            "preferred_time":          f"{request.preferred_time_from} - {request.preferred_time_to}",
+            "teachers_found":          len(top),
+            "results":                 top,
+        }
+    finally:
+        conn.close()
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    """Health check endpoint"""
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    return {
+        "message": "Tulkka Matching Engine API",
+        "version": "1.0.0",
+        "endpoints": {
+            "POST /match": "Match teachers to a student",
+            "GET /health": "Health check",
+            "GET /docs": "Interactive API documentation (Swagger UI)",
+            "GET /redoc": "Alternative API documentation (ReDoc)"
+        }
+    }
 
 
 if __name__ == "__main__":
-    print("Tulkka Matching Engine — http://localhost:5000")
+    import uvicorn
+    print("Tulkka Matching Engine (FastAPI) — http://localhost:5000")
+    print()
+    print("API Documentation:")
+    print("  Swagger UI: http://localhost:5000/docs")
+    print("  ReDoc:     http://localhost:5000/redoc")
     print()
     print("Test:")
     print('  curl -X POST http://localhost:5000/match -H "Content-Type: application/json" \\')
     print('  -d \'{"student_id": 930, "preferred_days": ["Sunday","Tuesday"], "preferred_time_from": "16:00", "preferred_time_to": "21:00", "mode": "trial"}\'')
-    app.run(debug=True, port=5000)
-
-
-# =============================================================================
-# ASSUMPTIONS — only what Mahesh confirmed missing + data gaps
-# =============================================================================
-# 1. preferred_days / preferred_time — from request params.
-#    Mahesh confirmed: student goals + schedule NOT captured at signup. Everything else is real.
-#
-# 2. student learning_goal — fetched from classes.student_goal (most recent class, real data).
-#    New students (no prior classes): defaults to "improve_conversation".
-#
-# 3. trial_conversion_rate — computed LIVE from trial_class_registrations (real).
-#    users.trial_conversion_rate column was mostly 0/unreliable, not used.
-#
-# 4. lesson_quality_score — avg of grammar_rate + pronunciation_rate + speaking_rate
-#    from lesson_feedbacks (101,571 real rows). Normalized to 0-100.
-#
-# 5. Language hard filter: teacher.language = 'EN' (Tulkka = English learning platform).
-#    Teachers with NULL language included (assumed EN). HE/AR teachers excluded.
-#
-# 6. Teacher native_language / languages_spoken — not in DB.
-#    Native language matching bonus skipped until teacher form data imported.
-#
-# 7. student_level matching — skipped. Only 1354/6466 students have it.
-#    Level fit set to neutral (0.5).
-#
-# 8. Student preferences (hobbies, temperament, language_preference, corrective_tolerance,
-#    scaffolding_preference, preferred_gadget) — schema ready (preferences_migration.sql).
-#    All default to 0.5 neutral until mobile team adds questions at signup.
-#
-# 9. Teacher profile (teaching_style, correction_style, scaffolding_style, language_support,
-#    max_students) — schema ready (preferences_migration.sql).
-#    All default to 0.5 neutral until teachers fill their form.
-#    MAX_CAPACITY = 20 used as fallback until teacher sets their own max.
-#
-# 10. current_students from classes with status in (pending, started, ended).
-#
-# 11. Scoring weights match spec exactly: 30/25/20/15/10.
-#
-# 12. Returns top 3 (Vinay said 2-3).
-#
-# 13. One-time availability (trial slots) not implemented — using recurring calendar.
-#     Will add once cancellation/one-time slot logic is defined.
+    uvicorn.run(app, host="127.0.0.1", port=5000)
