@@ -1,0 +1,197 @@
+{
+  "scenario_count": 5,
+  "avg_teachers_found": 1.8,
+  "avg_top3_score": 77.48,
+  "min_teachers_found": 1,
+  "max_teachers_found": 3,
+  "cases": [
+    {
+      "name": "Hebrew Trial Age12 B1",
+      "status_code": 200,
+      "teachers_found": 3,
+      "top_3": [
+        {
+          "teacher_id": 201,
+          "name": "Sarah Miller",
+          "score": 83.1,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 3,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "kids_friendly",
+            "energetic"
+          ]
+        },
+        {
+          "teacher_id": 204,
+          "name": "Fatima Williams",
+          "score": 82.9,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 3,
+          "languages_spoken": [
+            "English",
+            "Arabic"
+          ],
+          "teacher_tags": [
+            "bilingual",
+            "supportive"
+          ]
+        },
+        {
+          "teacher_id": 203,
+          "name": "Rachel Green",
+          "score": 78.2,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 3,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "kids_friendly",
+            "beginner_friendly"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Arabic Trial NativeRequired Age13 B1",
+      "status_code": 200,
+      "teachers_found": 1,
+      "top_3": [
+        {
+          "teacher_id": 204,
+          "name": "Fatima Williams",
+          "score": 82.9,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 3,
+          "languages_spoken": [
+            "English",
+            "Arabic"
+          ],
+          "teacher_tags": [
+            "bilingual",
+            "supportive"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Hebrew Subscription Age14 A2",
+      "status_code": 200,
+      "teachers_found": 2,
+      "top_3": [
+        {
+          "teacher_id": 201,
+          "name": "Sarah Miller",
+          "score": 68.1,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 0,
+          "recurring_slots_count": 2,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "kids_friendly",
+            "energetic"
+          ]
+        },
+        {
+          "teacher_id": 202,
+          "name": "David Cohen",
+          "score": 62.9,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 0,
+          "recurring_slots_count": 2,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "business_english",
+            "exam_prep"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Hebrew Beginner Trial Age10 A1",
+      "status_code": 200,
+      "teachers_found": 2,
+      "top_3": [
+        {
+          "teacher_id": 203,
+          "name": "Rachel Green",
+          "score": 83.2,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 2,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "kids_friendly",
+            "beginner_friendly"
+          ]
+        },
+        {
+          "teacher_id": 201,
+          "name": "Sarah Miller",
+          "score": 83.1,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 2,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "kids_friendly",
+            "energetic"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Omar Trial Age12 Arabic NoNativeRequired",
+      "status_code": 200,
+      "teachers_found": 1,
+      "top_3": [
+        {
+          "teacher_id": 202,
+          "name": "David Cohen",
+          "score": 72.9,
+          "conversion_rate": 100.0,
+          "retention_rate": 0.0,
+          "available_slots_count": 5,
+          "recurring_slots_count": 3,
+          "languages_spoken": [
+            "English",
+            "Hebrew"
+          ],
+          "teacher_tags": [
+            "business_english",
+            "exam_prep"
+          ]
+        }
+      ]
+    }
+  ]
+}

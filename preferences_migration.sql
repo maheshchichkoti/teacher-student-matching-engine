@@ -91,3 +91,142 @@ CREATE TABLE teacher_profile (
 -- hobbies                                  → (future) match with teacher topic specialties
 -- max_students                             → replaces hardcoded MAX_CAPACITY = 20
 -- =============================================================================
+
+BEGIN;
+
+----------------------------------------------------
+-- STUDENT MATCHING FIELDS
+----------------------------------------------------
+
+ALTER TABLE clean.students
+
+ADD COLUMN IF NOT EXISTS student_age INT,
+
+ADD COLUMN IF NOT EXISTS target_language TEXT DEFAULT 'English',
+
+ADD COLUMN IF NOT EXISTS native_language TEXT,
+
+ADD COLUMN IF NOT EXISTS requires_native_language_teacher BOOLEAN DEFAULT FALSE,
+
+-- schedule preferences (required for matching)
+
+ADD COLUMN IF NOT EXISTS preferred_days TEXT[],
+
+ADD COLUMN IF NOT EXISTS preferred_time_start TIME,
+
+ADD COLUMN IF NOT EXISTS preferred_time_end TIME,
+
+ADD COLUMN IF NOT EXISTS sessions_per_week INT,
+
+-- personalization signals (future)
+
+ADD COLUMN IF NOT EXISTS hobbies JSONB,
+
+ADD COLUMN IF NOT EXISTS language_preference TEXT,
+
+ADD COLUMN IF NOT EXISTS temperament TEXT,
+
+ADD COLUMN IF NOT EXISTS corrective_tolerance TEXT,
+
+ADD COLUMN IF NOT EXISTS scaffolding_preference TEXT,
+
+ADD COLUMN IF NOT EXISTS preferred_gadget TEXT;
+
+
+----------------------------------------------------
+-- TEACHER MATCHING FIELDS
+----------------------------------------------------
+
+ALTER TABLE clean.teachers
+
+ADD COLUMN IF NOT EXISTS trial_enabled BOOLEAN DEFAULT TRUE,
+
+ADD COLUMN IF NOT EXISTS recurring_enabled BOOLEAN DEFAULT TRUE,
+
+ADD COLUMN IF NOT EXISTS age_min INT DEFAULT 5,
+
+ADD COLUMN IF NOT EXISTS age_max INT DEFAULT 18,
+
+ADD COLUMN IF NOT EXISTS teacher_tags TEXT[],
+
+ADD COLUMN IF NOT EXISTS languages_spoken TEXT[],
+
+ADD COLUMN IF NOT EXISTS teaching_languages TEXT[],
+
+ADD COLUMN IF NOT EXISTS max_students_capacity INT DEFAULT 20,
+
+ADD COLUMN IF NOT EXISTS current_students INT DEFAULT 0,
+
+ADD COLUMN IF NOT EXISTS trial_priority TEXT DEFAULT 'normal',
+
+ADD COLUMN IF NOT EXISTS teaching_style TEXT,
+
+ADD COLUMN IF NOT EXISTS correction_style TEXT,
+
+ADD COLUMN IF NOT EXISTS scaffolding_style TEXT,
+
+ADD COLUMN IF NOT EXISTS language_support TEXT;
+
+
+----------------------------------------------------
+-- TRIAL PRIORITY CONSTRAINT
+----------------------------------------------------
+
+ALTER TABLE clean.teachers
+ADD CONSTRAINT IF NOT EXISTS chk_trial_priority
+CHECK (trial_priority IN ('high','normal','low','disabled'));
+
+
+----------------------------------------------------
+-- POST TRIAL FEEDBACK
+----------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
+
+feedback_id BIGSERIAL PRIMARY KEY,
+
+class_id INT REFERENCES clean.classes(class_id),
+
+student_id INT REFERENCES clean.students(student_id),
+
+teacher_id INT REFERENCES clean.teachers(teacher_id),
+
+feedback_role TEXT CHECK (feedback_role IN ('student','teacher')),
+
+trial_success BOOLEAN,
+
+teacher_match_quality INT CHECK (teacher_match_quality BETWEEN 1 AND 5),
+
+student_feedback TEXT,
+
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+);
+
+
+----------------------------------------------------
+-- PERFORMANCE INDEXES
+----------------------------------------------------
+
+CREATE INDEX IF NOT EXISTS idx_teachers_trial_enabled
+ON clean.teachers(trial_enabled);
+
+CREATE INDEX IF NOT EXISTS idx_teachers_recurring_enabled
+ON clean.teachers(recurring_enabled);
+
+CREATE INDEX IF NOT EXISTS idx_teachers_languages
+ON clean.teachers USING GIN(languages_spoken);
+
+CREATE INDEX IF NOT EXISTS idx_teachers_tags
+ON clean.teachers USING GIN(teacher_tags);
+
+CREATE INDEX IF NOT EXISTS idx_teachers_age_range
+ON clean.teachers(age_min, age_max);
+
+CREATE INDEX IF NOT EXISTS idx_students_age
+ON clean.students(student_age);
+
+CREATE INDEX IF NOT EXISTS idx_trial_feedback_teacher
+ON analytics.trial_class_feedback(teacher_id);
+
+COMMIT;

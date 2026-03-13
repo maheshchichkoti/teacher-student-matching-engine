@@ -1,91 +1,166 @@
 """
 Backward Validation — Tulkka Matching Engine
----------------------------------------------
-Ground truth: trial_class_registrations where status='converted'
-These are students who did a trial and actually enrolled with that teacher.
-That's the real signal — engine SHOULD have recommended this teacher.
+-----------------------------------------------------------
+Ground truth: analytics.class_facts where event_type='trial_converted'
+These are students who completed a trial and enrolled with that teacher.
+That is the real signal — the engine SHOULD have recommended this teacher.
 
-Join via email: trial_class_registrations.email -> users.email to get student_id.
+FIX #6 applied (v1.1.0):
+  - fetch_all_teachers() now returns 11-tuple (added languages_spoken).
+  - Unpacking updated to match.
+  - "teach English" check replaced: "English" in (teaching_langs or [])
+  - compute_score() call updated with all required arguments (incl. retention_rate).
+  - fetch_all_retention_rates() imported and used.
 
 Run: python validate_matching.py
 """
 
-import json
-import os
 import sys
 from dotenv import load_dotenv
-
-sys.stdout.reconfigure(encoding='utf-8')
-import mysql.connector
 from matching_engine import (
-    get_db, fetch_all_teachers, fetch_all_conversion_rates,
-    fetch_all_quality_scores, fetch_all_student_counts,
-    fetch_all_availability, get_matching_slots, compute_score
+    get_db,
+    fetch_student,
+    fetch_all_teachers,
+    fetch_all_conversion_rates,
+    fetch_all_retention_rates,      # FIX #6: import retention helper
+    fetch_all_quality_scores,
+    fetch_all_student_counts,
+    fetch_all_availability,
+    get_matching_slots,
+    compute_score,
+    _as_str_list,
 )
 
+sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv()
 
-# Use a wide time window so availability isn't the bottleneck
-# We're testing scoring quality, not availability filtering
-ALL_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+# Wide window — we are testing scoring quality, not availability filtering
+ALL_DAYS  = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 TIME_FROM = "08:00"
 TIME_TO   = "22:00"
 
-TOP_N = 3   # check if actual teacher is in top N
+TOP_N = 3   # check if the actual teacher appears in top N
 
+
+# ─────────────────────────────────────────────
+# DB HELPER
+# ─────────────────────────────────────────────
 
 def q(conn, sql, params=None):
-    cur = conn.cursor(buffered=True)
+    from psycopg2.extras import RealDictCursor
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute(sql, params or ())
     rows = cur.fetchall()
-    cols = [d[0] for d in cur.description] if cur.description else []
+    cols = list(rows[0].keys()) if rows else []
     cur.close()
-    return cols, rows
+    return cols, [list(row.values()) for row in rows]
 
 
-def fetch_converted_pairs(conn, limit=50):
+# ─────────────────────────────────────────────
+# GROUND TRUTH
+# ─────────────────────────────────────────────
+
+def fetch_converted_pairs(conn, limit: int = 50):
     """
-    Ground truth: trial students who converted to enrolled with a specific teacher.
-    trial_class_registrations has no student_id FK — join via email to users table.
-    Only includes cases where email match is found (student exists as a user).
+    Ground truth: most-recent trial conversions.
+    Returns: [(student_id, teacher_id, student_name, teacher_name), ...]
     """
     _, rows = q(conn, """
-        SELECT DISTINCT u.id as student_id, tcr.teacher_id,
-               tcr.student_name, t.full_name as teacher_name
-        FROM trial_class_registrations tcr
-        JOIN users u ON LOWER(TRIM(u.email)) = LOWER(TRIM(tcr.email))
-        JOIN users t ON t.id = tcr.teacher_id
-        WHERE tcr.status = 'converted'
-          AND tcr.email IS NOT NULL AND tcr.email != ''
-          AND u.role_name = 'user'
-          AND t.role_name = 'teacher'
+        SELECT
+            cf.student_id,
+            cf.teacher_id,
+            s.full_name AS student_name,
+            t.full_name AS teacher_name,
+            MAX(cf.occurred_at) AS latest_conversion_at
+        FROM analytics.class_facts cf
+        JOIN clean.students s ON cf.student_id = s.student_id
+        JOIN clean.teachers t ON cf.teacher_id = t.teacher_id
+        WHERE cf.event_type = 'trial_converted'
           AND t.status = 'active'
-        GROUP BY u.id, tcr.teacher_id, tcr.student_name, t.full_name
-        ORDER BY MAX(tcr.id) DESC
+        GROUP BY cf.student_id, cf.teacher_id, s.full_name, t.full_name
+        ORDER BY latest_conversion_at DESC
         LIMIT %s
     """, (limit,))
-    return rows  # [(student_id, teacher_id, student_name, teacher_name), ...]
+    return [row[:4] for row in rows]  # [(student_id, teacher_id, student_name, teacher_name)]
 
 
-def run_match_for_student(student_id, all_teachers, conv_map, qual_map, stud_map, avail_map):
-    """Run the matching engine for one student, return ranked teacher list."""
-    eligible = [(tid, name, lang) for tid, name, lang in all_teachers
-                if (lang or "EN").upper() in ("EN", "")]
+# ─────────────────────────────────────────────
+# MATCHING RUNNER (mirrors the API pipeline)
+# ─────────────────────────────────────────────
 
+def run_match_for_student(student_id, all_teachers, conv_map, retention_map, qual_map, stud_map, avail_map):
+    """
+    Run the full scoring pipeline for one student against all eligible teachers.
+    Uses the current fetch_all_teachers() tuple shape and compute_score() signature.
+    """
     results = []
-    for tid, name, lang in eligible:
+    conn = get_db()
+    student = fetch_student(conn, student_id)
+    conn.close()
+    if not student:
+        return results
+
+    student_age = student.get("student_age")
+    native_language = student.get("native_language")
+    requires_native = student.get("requires_native_language_teacher") or False
+    student_prefs = {
+        "language_preference": student.get("language_preference"),
+        "temperament": student.get("temperament"),
+        "corrective_tolerance": student.get("corrective_tolerance"),
+        "scaffolding_preference": student.get("scaffolding_preference"),
+    }
+
+    for row in all_teachers:
+        (tid, name, teaching_langs, trial_enabled,
+         age_min, age_max, tags, capacity, priority, languages_spoken,
+         teaching_style, correction_style, scaffolding_style) = row
+
+        teaching_langs_list = _as_str_list(teaching_langs)
+        languages_spoken_list = _as_str_list(languages_spoken)
+
+        # FIX #6: "teaches English" check — no more (lang or "EN").upper()
+        if "English" not in teaching_langs_list:
+            continue
+
+        if priority == "disabled":
+            continue
+
+        if student_age:
+            if age_min is not None and student_age < age_min:
+                continue
+            if age_max is not None and student_age > age_max:
+                continue
+
+        if requires_native and native_language:
+            if native_language not in languages_spoken_list:
+                continue
+
         availability = avail_map.get(tid, {})
         slots = get_matching_slots(availability, ALL_DAYS, TIME_FROM, TIME_TO)
         if not slots:
             continue
 
+        max_cap      = capacity or 20
+        conv_rate    = conv_map.get(tid, 0.0)
+        ret_rate     = retention_map.get(tid, 0.0)     # FIX #6: retention
+        quality      = qual_map.get(tid, 0.0)
+        cur_students = stud_map.get(tid, 0)
+
+        # FIX #6: call signature matches updated compute_score()
         score = compute_score(
-            {},  # student dict not needed for current scoring
-            slots,
-            conv_map.get(tid, 0.0),
-            qual_map.get(tid, 0.0),
-            stud_map.get(tid, 0),
-            ALL_DAYS
+            student_prefs     = student_prefs,
+            teacher_profile   = {
+                "max_students": max_cap,
+                "teaching_style": teaching_style,
+                "correction_style": correction_style,
+                "scaffolding_style": scaffolding_style,
+            },
+            slots             = slots,
+            conv_rate         = conv_rate,
+            retention_rate    = ret_rate,
+            quality_score     = quality,
+            current_students  = cur_students,
+            preferred_days    = ALL_DAYS,
         )
         results.append({"teacher_id": tid, "name": name, "score": score})
 
@@ -93,53 +168,55 @@ def run_match_for_student(student_id, all_teachers, conv_map, qual_map, stud_map
     return results
 
 
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
 def main():
-    print("Tulkka Matching Engine — Backward Validation")
+    print("Tulkka Matching Engine — Backward Validation v1.1.0")
     print("=" * 55)
     print(f"Checking: does actual teacher appear in top {TOP_N}?\n")
 
     conn = get_db()
 
-    # Ground truth pairs
     pairs = fetch_converted_pairs(conn, limit=50)
     if not pairs:
-        print("No converted trial pairs found (email join returned nothing).")
+        print("No converted trial pairs found.")
         conn.close()
         return
 
-    print(f"Found {len(pairs)} converted trial pairs (email-matched to users table).\n")
+    print(f"Found {len(pairs)} converted trial pairs.\n")
 
-    # Batch fetch all data once
-    all_teachers = fetch_all_teachers(conn)
-    teacher_ids  = [t[0] for t in all_teachers]
-    conv_map     = fetch_all_conversion_rates(conn)
-    qual_map     = fetch_all_quality_scores(conn)
-    stud_map     = fetch_all_student_counts(conn)
-    avail_map    = fetch_all_availability(conn, teacher_ids)
+    # Batch fetch (one DB round-trip each)
+    all_teachers  = fetch_all_teachers(conn)
+    teacher_ids   = [row[0] for row in all_teachers]
+    conv_map      = fetch_all_conversion_rates(conn)
+    retention_map = fetch_all_retention_rates(conn)
+    qual_map      = fetch_all_quality_scores(conn)
+    stud_map      = fetch_all_student_counts(conn)
+    avail_map     = fetch_all_availability(conn, teacher_ids)
     conn.close()
 
-    # Validate each pair
     hit_top1  = 0
     hit_top3  = 0
     miss      = 0
     no_avail  = 0
-    results_detail = []
+    details   = []
 
     for student_id, actual_teacher_id, student_name, teacher_name in pairs:
         ranked = run_match_for_student(
-            student_id, all_teachers, conv_map, qual_map, stud_map, avail_map
+            student_id, all_teachers,
+            conv_map, retention_map, qual_map, stud_map, avail_map,
         )
-
         ranked_ids = [r["teacher_id"] for r in ranked]
 
         if actual_teacher_id not in ranked_ids:
-            # Teacher has no availability in our wide window — skip
             no_avail += 1
             status = "NO_AVAIL"
-            rank = None
-            score = None
+            rank   = None
+            score  = None
         else:
-            rank  = ranked_ids.index(actual_teacher_id) + 1  # 1-based
+            rank  = ranked_ids.index(actual_teacher_id) + 1
             score = next(r["score"] for r in ranked if r["teacher_id"] == actual_teacher_id)
 
             if rank == 1:
@@ -153,36 +230,39 @@ def main():
                 miss += 1
                 status = f"MISS (rank #{rank})"
 
-        results_detail.append({
-            "student": student_name,
+        details.append({
+            "student":        student_name,
             "actual_teacher": teacher_name,
-            "status": status,
-            "rank": rank,
-            "score": score,
-            "top3": [r["name"] for r in ranked[:3]]
+            "status":         status,
+            "rank":           rank,
+            "score":          score,
+            "top3":           [r["name"] for r in ranked[:3]],
         })
 
-    # Print detailed results
-    print(f"{'Student':<25} {'Actual Teacher':<22} {'Result':<15} {'Score'}")
+    # Print table
+    print(f"{'Student':<25} {'Actual Teacher':<22} {'Result':<18} {'Score'}")
     print("-" * 80)
-    for r in results_detail:
-        score_str = f"{r['score']}%" if r['score'] is not None else "—"
-        print(f"{r['student'][:24]:<25} {r['actual_teacher'][:21]:<22} {r['status']:<15} {score_str}")
-        if r['status'].startswith("MISS"):
-            print(f"  -> Top 3 were: {', '.join(r['top3'])}")
+    for r in details:
+        score_str = f"{r['score']}%" if r["score"] is not None else "—"
+        print(f"{r['student'][:24]:<25} {r['actual_teacher'][:21]:<22} {r['status']:<18} {score_str}")
+        if r["status"].startswith("MISS"):
+            print(f"  → Top 3 were: {', '.join(r['top3'])}")
 
     # Summary
     validated = len(pairs) - no_avail
     print("\n" + "=" * 55)
     print(f"RESULTS ({validated} validated, {no_avail} skipped — teacher had no availability)\n")
     if validated > 0:
-        print(f"  Top-1 accuracy : {hit_top1}/{validated} = {round(hit_top1/validated*100, 1)}%")
-        print(f"  Top-3 accuracy : {hit_top3}/{validated} = {round(hit_top3/validated*100, 1)}%")
-        print(f"  Misses         : {miss}/{validated} = {round(miss/validated*100, 1)}%")
+        top1_pct = round(hit_top1 / validated * 100, 1)
+        top3_pct = round(hit_top3 / validated * 100, 1)
+        miss_pct = round(miss     / validated * 100, 1)
+        print(f"  Top-1 accuracy : {hit_top1}/{validated} = {top1_pct}%")
+        print(f"  Top-3 accuracy : {hit_top3}/{validated} = {top3_pct}%")
+        print(f"  Misses         : {miss}/{validated} = {miss_pct}%")
         print()
-        if hit_top3 / validated >= 0.6:
+        if top3_pct >= 60:
             print("  Engine quality: GOOD (60%+ top-3 accuracy)")
-        elif hit_top3 / validated >= 0.4:
+        elif top3_pct >= 40:
             print("  Engine quality: MODERATE — review miss cases")
         else:
             print("  Engine quality: NEEDS WORK — check scoring weights")

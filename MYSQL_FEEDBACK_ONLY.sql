@@ -1,18 +1,22 @@
 -- =============================================================================
--- Tulkka Feedback Schema
--- Covers all feedback touchpoints across the company
--- Author: Abhiram / Tulkka Engineering
+-- Tulkka Feedback Tables — MySQL Backend ONLY
 -- =============================================================================
--- Existing table NOTE: lesson_feedbacks already exists (grammar_rate, pronunciation_rate,
--- speaking_rate from teacher side). These new tables are additive — don't drop that table.
+-- IMPORTANT: Run this on MySQL database (tulkka-ai backend)
+-- DO NOT run on PostgreSQL (matching engine)
+--
+-- Changes from original feedback_schema.sql:
+--   ❌ REMOVED: student_preferences table (already in PostgreSQL)
+--   ❌ REMOVED: teacher_profile table (already in PostgreSQL)
+--   ✅ KEPT: All feedback tables (needed for student/teacher feedback)
+--
+-- Existing table: lesson_feedbacks (89,675 rows) — DO NOT DROP
 -- =============================================================================
-
 
 -- -----------------------------------------------------------------------------
 -- 1. STUDENT → TEACHER (after every regular class)
 --    "How was your lesson today?"
 -- -----------------------------------------------------------------------------
-CREATE TABLE feedback_student_to_teacher (
+CREATE TABLE IF NOT EXISTS feedback_student_to_teacher (
     id                  INT AUTO_INCREMENT PRIMARY KEY,
     class_id            INT NOT NULL,                        -- FK to classes.id
     student_id          INT NOT NULL,                        -- FK to users.id
@@ -35,14 +39,14 @@ CREATE TABLE feedback_student_to_teacher (
     UNIQUE KEY uq_class_student (class_id, student_id),     -- One feedback per class per student
     INDEX idx_teacher (teacher_id),
     INDEX idx_student (student_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- -----------------------------------------------------------------------------
 -- 2. TEACHER → STUDENT (after every regular class)
 --    "How was your student today?"
 -- -----------------------------------------------------------------------------
-CREATE TABLE feedback_teacher_to_student (
+CREATE TABLE IF NOT EXISTS feedback_teacher_to_student (
     id                  INT AUTO_INCREMENT PRIMARY KEY,
     class_id            INT NOT NULL,
     teacher_id          INT NOT NULL,
@@ -67,14 +71,14 @@ CREATE TABLE feedback_teacher_to_student (
     UNIQUE KEY uq_class_teacher (class_id, teacher_id),
     INDEX idx_teacher (teacher_id),
     INDEX idx_student (student_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- -----------------------------------------------------------------------------
 -- 3. STUDENT → TRIAL CLASS (after trial class only)
 --    Higher stakes — this is the conversion moment
 -- -----------------------------------------------------------------------------
-CREATE TABLE feedback_trial_student (
+CREATE TABLE IF NOT EXISTS feedback_trial_student (
     id                      INT AUTO_INCREMENT PRIMARY KEY,
     trial_registration_id   INT NOT NULL,                    -- FK to trial_class_registrations.id
     student_id              INT NOT NULL,
@@ -109,14 +113,14 @@ CREATE TABLE feedback_trial_student (
     UNIQUE KEY uq_trial_student (trial_registration_id, student_id),
     INDEX idx_teacher (teacher_id),
     INDEX idx_student (student_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- -----------------------------------------------------------------------------
 -- 4. TEACHER → TRIAL STUDENT (after trial class)
 --    Teacher's assessment of the new student
 -- -----------------------------------------------------------------------------
-CREATE TABLE feedback_trial_teacher (
+CREATE TABLE IF NOT EXISTS feedback_trial_teacher (
     id                      INT AUTO_INCREMENT PRIMARY KEY,
     trial_registration_id   INT NOT NULL,
     teacher_id              INT NOT NULL,
@@ -143,14 +147,14 @@ CREATE TABLE feedback_trial_teacher (
     UNIQUE KEY uq_trial_teacher (trial_registration_id, teacher_id),
     INDEX idx_teacher (teacher_id),
     INDEX idx_student (student_id)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- -----------------------------------------------------------------------------
 -- 5. PLATFORM FEEDBACK (students + teachers about the app/company)
 --    "How is your experience with Tulkka as a product?"
 -- -----------------------------------------------------------------------------
-CREATE TABLE feedback_platform (
+CREATE TABLE IF NOT EXISTS feedback_platform (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     user_id         INT NOT NULL,                            -- FK to users.id (student or teacher)
     user_role       ENUM('student','teacher') NOT NULL,
@@ -190,113 +194,23 @@ CREATE TABLE feedback_platform (
 
     INDEX idx_user (user_id),
     INDEX idx_role_trigger (user_role, trigger_event)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- =============================================================================
--- SUMMARY OF TABLES
+-- SUMMARY
 -- =============================================================================
--- feedback_student_to_teacher  — student rates every class + want_to_continue signal
--- feedback_teacher_to_student  — teacher rates student engagement + good_fit signal
--- feedback_trial_student       — student trial rating + want_to_enroll (conversion signal)
--- feedback_trial_teacher       — teacher assesses trial student + fit signal
--- feedback_platform            — anyone rates the product (NPS + feature requests)
+-- Created 5 new feedback tables:
+--   1. feedback_student_to_teacher  — Student rates every class + retention signal
+--   2. feedback_teacher_to_student  — Teacher rates student engagement + fit signal
+--   3. feedback_trial_student       — Student trial rating + conversion signal
+--   4. feedback_trial_teacher       — Teacher assesses trial student + fit signal
+--   5. feedback_platform            — Platform NPS + feature requests
 --
--- EXISTING (keep as-is):
--- lesson_feedbacks             — teacher's grammar/pronunciation/speaking ratings (101,571 rows)
--- trial_class_registrations    — trial conversion tracking
--- =============================================================================
-
--- =============================================================================
--- Tulkka Matching Engine — Preferences Migration
--- Adds student preference + teacher profile fields needed for personalization.
--- These are the fields Mahesh requested (from client side / Zoe input).
+-- Existing table (DO NOT DROP):
+--   - lesson_feedbacks (89,675 rows) — Teacher's grammar/pronunciation/speaking ratings
 --
--- Run this once on tulkka_live DB.
--- After running, mobile team adds questions at student signup.
--- Teachers fill their profile form.
--- =============================================================================
-
-
--- -----------------------------------------------------------------------------
--- 1. STUDENT PREFERENCES
---    Collected at signup (mobile team to add these questions)
--- -----------------------------------------------------------------------------
-CREATE TABLE student_preferences (
-    id                      INT AUTO_INCREMENT PRIMARY KEY,
-    user_id                 INT NOT NULL UNIQUE,              -- FK to users.id
-
-    -- Hobbies / interests (used to match teacher's topic specialties)
-    hobbies                 JSON DEFAULT NULL,                -- e.g. ["sports","music","cooking"]
-
-    -- Language preference: does student want English-only or assisted?
-    language_preference     ENUM(
-        'english_only',
-        'hebrew_assisted',
-        'arabic_assisted'
-    ) DEFAULT NULL,
-
-    -- Temperament: energetic vs calm student
-    temperament             ENUM('energetic', 'calm') DEFAULT NULL,
-
-    -- Corrective tolerance: does student want immediate or indirect correction?
-    corrective_tolerance    ENUM('direct', 'indirect') DEFAULT NULL,
-
-    -- Scaffolding preference: quick answers (high) vs let me think (low)
-    scaffolding_preference  ENUM('high', 'low') DEFAULT NULL,
-
-    -- Device student uses for classes
-    preferred_gadget        ENUM('phone', 'laptop', 'tablet') DEFAULT NULL,
-
-    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    INDEX idx_user (user_id)
-);
-
-
--- -----------------------------------------------------------------------------
--- 2. TEACHER PROFILE
---    Filled by teacher via onboarding form
--- -----------------------------------------------------------------------------
-CREATE TABLE teacher_profile (
-    id                  INT AUTO_INCREMENT PRIMARY KEY,
-    user_id             INT NOT NULL UNIQUE,                  -- FK to users.id
-
-    -- Teaching personality style
-    teaching_style      ENUM('perky', 'business_like') DEFAULT NULL,
-
-    -- How teacher handles corrections
-    correction_style    ENUM('direct', 'indirect') DEFAULT NULL,
-
-    -- How teacher handles student struggling
-    scaffolding_style   ENUM('high', 'low') DEFAULT NULL,
-
-    -- Language support: can teacher assist in Hebrew/Arabic or English only?
-    language_support    ENUM(
-        'english_only',
-        'hebrew_assisted',
-        'arabic_assisted'
-    ) DEFAULT NULL,
-
-    -- Teacher's self-reported max students (replaces hardcoded MAX_CAPACITY=20)
-    max_students        INT DEFAULT NULL,
-
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    INDEX idx_user (user_id)
-);
-
-
--- =============================================================================
--- WHAT EACH FIELD UNLOCKS IN THE MATCHING ENGINE
--- =============================================================================
--- language_preference vs language_support  → hard filter or strong match signal
--- temperament vs teaching_style            → energetic→perky, calm→business_like
--- corrective_tolerance vs correction_style → direct student → direct teacher
--- scaffolding_preference vs scaffolding_style → high student → high teacher
--- preferred_gadget                         → (future) filter teachers optimized for mobile
--- hobbies                                  → (future) match with teacher topic specialties
--- max_students                             → replaces hardcoded MAX_CAPACITY = 20
+-- NOT created (already in PostgreSQL):
+--   - student_preferences (use PostgreSQL columns instead)
+--   - teacher_profile (use PostgreSQL columns instead)
 -- =============================================================================
