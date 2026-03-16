@@ -115,6 +115,10 @@ class MatchRequest(BaseModel):
     preferred_time_to: str = Field(default="21:00", description="Latest slot time HH:MM")
     sessions_per_week: int = Field(default=1, description="How many sessions per week")
     mode: str = Field(default="trial", description="'trial' or 'subscription'")
+    student_tags: List[str] = Field(default_factory=list)
+    student_goals: List[str] = Field(default_factory=list)
+    search_option: Optional[str] = Field(default=None, description="'earliest_available' or null")
+    allow_flexibility_suggestions: bool = Field(default=False)
 
 
 class TeacherResult(BaseModel):
@@ -139,12 +143,30 @@ class MatchResponse(BaseModel):
     student_native_language: Optional[str]
     student_age: Optional[int]
     english_level: Optional[str]
+    student_tags: List[str]
+    student_goals: List[str]
     mode: str
     preferred_days: List[str]
     preferred_time: str
     sessions_per_week: int
     teachers_found: int
     results: List[TeacherResult]
+    flexibility_suggestions: List[str] = Field(default_factory=list)
+
+
+class TrialFeedbackRequest:
+    class_id: int
+    student_id: int
+    teacher_id: int
+    feedback_role: str
+    trial_success: Optional[bool] = None
+    teacher_match_quality: Optional[int] = Field(default=None, ge=1, le=5)
+    student_feedback: Optional[str] = None
+
+
+class TrialFeedbackResponse(BaseModel):
+    feedback_id: int
+    status: str
 
 
 class HealthResponse(BaseModel):
@@ -170,6 +192,27 @@ def q(conn, sql, params=None):
     return cols, [list(row.values()) for row in rows]
 
 
+def q_execute(conn, sql, params=None):
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    conn.commit()
+    row = cur.fetchone()
+    cur.close()
+    return row
+
+
+def table_has_column(conn, schema: str, table: str, column: str) -> bool:
+    _, rows = q(conn, """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name = %s
+        LIMIT 1
+    """, (schema, table, column))
+    return bool(rows)
+
+
 def get_next_date(day_name: str) -> str:
     """Return the next calendar date (YYYY-MM-DD) for a given day name."""
     target = DAY_MAP.get(day_name.lower(), "sun")
@@ -189,11 +232,15 @@ def get_next_date(day_name: str) -> str:
 
 def fetch_student(conn, student_id: int):
     """Fetch student row with all matching-engine fields."""
-    _, rows = q(conn, """
+    goal_expr = "learning_goal::text" if table_has_column(conn, "clean", "students", "learning_goal") else "NULL::text"
+    tags_expr = "hobbies" if table_has_column(conn, "clean", "students", "hobbies") else "NULL::jsonb"
+    _, rows = q(conn, f"""
         SELECT student_id, full_name, native_language, cefr_level, student_age,
                target_language, requires_native_language_teacher, preferred_days,
                preferred_time_start, preferred_time_end, sessions_per_week,
-               language_preference, temperament, corrective_tolerance, scaffolding_preference
+               language_preference, temperament, corrective_tolerance, scaffolding_preference,
+               {goal_expr} AS learning_goal,
+               {tags_expr} AS student_tags
         FROM clean.students
         WHERE student_id = %s
     """, (student_id,))
@@ -217,6 +264,8 @@ def fetch_student(conn, student_id: int):
         "temperament":                      r[12],
         "corrective_tolerance":             r[13],
         "scaffolding_preference":           r[14],
+        "student_goals":                    [r[15]] if r[15] else [],
+        "student_tags":                     _as_str_list(r[16]),
     }
 
 
@@ -490,6 +539,33 @@ def get_matching_slots(availability: dict, preferred_days: list, time_from: str,
     return slots
 
 
+def _normalize_preferred_days(preferred_days: list[str]) -> list[str]:
+    normalized = []
+    for day in preferred_days or []:
+        for part in str(day).split(","):
+            cleaned = part.strip().lower()
+            mapped = DAY_MAP.get(cleaned, cleaned[:3] if cleaned else "")
+            if mapped and mapped in DAY_NAMES and mapped not in normalized:
+                normalized.append(mapped)
+    return normalized
+
+
+def _build_flexibility_suggestions(results: list[dict], preferred_days: list[str], time_from: str, time_to: str) -> list[str]:
+    suggestions = []
+    current_count = len(results)
+    if current_count:
+        return suggestions
+    from_min = _to_minutes(time_from)
+    to_min = _to_minutes(time_to)
+    if to_min - from_min >= 60:
+        suggestions.append("Try extending the preferred time range by 1 hour later to widen the teacher pool.")
+    if len(preferred_days) < 3:
+        suggestions.append("Add one more preferred day to increase matching coverage.")
+    if not suggestions:
+        suggestions.append("Relax one hard preference to surface more eligible teachers.")
+    return suggestions
+
+
 def _pref_match(student_val, teacher_val, match_map=None) -> float:
     """
     Compare one student preference against a teacher value.
@@ -512,6 +588,8 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
     """
     # NOTE: language_support removed - using languages_spoken for native language matching instead
     teacher_tags = set(teacher_profile.get("teacher_tags") or [])
+    student_tags = {str(tag).lower() for tag in (student_prefs.get("student_tags") or [])}
+    student_goals = {str(goal).lower() for goal in (student_prefs.get("student_goals") or [])}
     age = student_prefs.get("student_age")
     english_level = (student_prefs.get("english_level") or "").upper()
     age_fit = 0.5
@@ -530,6 +608,28 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
             level_fit = 1.0
         elif english_level in {"A1", "A2"} and "exam_prep" in teacher_tags:
             level_fit = 0.3
+    tag_fit = 0.5
+    if student_tags:
+        teacher_tags_lower = {tag.lower() for tag in teacher_tags}
+        overlap = len(student_tags & teacher_tags_lower)
+        tag_fit = min(overlap / max(len(student_tags), 1), 1.0) if overlap else 0.3
+    goal_fit = 0.5
+    if student_goals:
+        teacher_tags_lower = {tag.lower() for tag in teacher_tags}
+        goal_map = {
+            "business": {"business_english", "professional", "exam_prep"},
+            "travel": {"conversation", "conversation_teacher", "energetic"},
+            "academic": {"grammar_specialist", "exam_prep", "beginner_friendly"},
+            "conversation": {"conversation", "conversation_teacher", "energetic"},
+            "exam": {"exam_prep", "grammar_specialist"},
+        }
+        matched = 0
+        for goal in student_goals:
+            for keyword, mapped_tags in goal_map.items():
+                if keyword in goal and teacher_tags_lower.intersection(mapped_tags):
+                    matched += 1
+                    break
+        goal_fit = min(matched / max(len(student_goals), 1), 1.0) if matched else 0.3
     scores = [
         0.5,  # Placeholder for language preference match (handled by hard filter)
         _pref_match(
@@ -541,6 +641,8 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
         _pref_match(student_prefs.get("scaffolding_preference"), teacher_profile.get("scaffolding_style")),
         age_fit,
         level_fit,
+        tag_fit,
+        goal_fit,
     ]
     return sum(scores) / len(scores)
 
@@ -607,6 +709,63 @@ def compute_score(
     return round(min(max(final_score, 0.0), 1.0) * 100, 1)
 
 
+def compute_load_balancing_adjustment(current_students: int, max_students: int, trial_count: int) -> float:
+    max_cap = max(max_students or MAX_CAPACITY, 1)
+    utilization = current_students / max_cap
+    adjustment = 0.0
+    if utilization >= 0.90:
+        adjustment -= 8.0
+    elif utilization >= 0.75:
+        adjustment -= 5.0
+    elif utilization >= 0.60:
+        adjustment -= 2.5
+    elif utilization <= 0.20:
+        adjustment += 3.0
+    elif utilization <= 0.40:
+        adjustment += 1.5
+    if trial_count <= 3 and utilization <= 0.50:
+        adjustment += 1.5
+    return adjustment
+
+
+def compute_priority_adjustment(priority: str) -> float:
+    if priority == "high":
+        return 4.0
+    if priority == "low":
+        return -4.0
+    return 0.0
+
+
+def compute_personalization_adjustment(student_prefs: dict, teacher_profile: dict) -> float:
+    teacher_tags = {str(tag).lower() for tag in (teacher_profile.get("teacher_tags") or [])}
+    age = student_prefs.get("student_age")
+    english_level = (student_prefs.get("english_level") or "").upper()
+    adjustment = 0.0
+
+    if age is not None:
+        if age <= 12:
+            if "kids_friendly" in teacher_tags:
+                adjustment += 4.0
+            if "business_english" in teacher_tags:
+                adjustment -= 3.0
+        elif age >= 15:
+            if "business_english" in teacher_tags or "exam_prep" in teacher_tags or "professional" in teacher_tags:
+                adjustment += 4.0
+            if "kids_friendly" in teacher_tags and "business_english" not in teacher_tags:
+                adjustment -= 3.0
+
+    if english_level in {"A1", "A2"}:
+        if "beginner_friendly" in teacher_tags or "kids_friendly" in teacher_tags:
+            adjustment += 3.0
+        if "exam_prep" in teacher_tags and "beginner_friendly" not in teacher_tags:
+            adjustment -= 2.0
+    elif english_level in {"B1", "B2", "C1", "C2"}:
+        if "exam_prep" in teacher_tags or "business_english" in teacher_tags or "professional" in teacher_tags:
+            adjustment += 3.0
+
+    return adjustment
+
+
 # ─────────────────────────────────────────────────────────────
 # API ENDPOINTS
 # ─────────────────────────────────────────────────────────────
@@ -629,6 +788,10 @@ async def match(request: MatchRequest):
         raise HTTPException(status_code=400, detail="preferred_days is required")
     if request.mode not in ("trial", "subscription"):
         raise HTTPException(status_code=400, detail="mode must be 'trial' or 'subscription'")
+    normalized_days = _normalize_preferred_days(request.preferred_days)
+    if not normalized_days:
+        raise HTTPException(status_code=400, detail="preferred_days must contain valid day values")
+    request.preferred_days = normalized_days
 
     conn = get_db()
     try:
@@ -643,8 +806,9 @@ async def match(request: MatchRequest):
         requires_native = request.requires_native_language_teacher or (
             student.get("requires_native_language_teacher") if student else False
         )
+        student_tags = request.student_tags or (student.get("student_tags") if student else []) or []
+        student_goals = request.student_goals or (student.get("student_goals") if student else []) or []
 
-        # Build student preferences for scoring (FIX #1)
         student_prefs = {
             "language_preference": student.get("language_preference") if student else None,
             "temperament": student.get("temperament") if student else None,
@@ -652,6 +816,8 @@ async def match(request: MatchRequest):
             "scaffolding_preference": student.get("scaffolding_preference") if student else None,
             "student_age": student_age,
             "english_level": english_level,
+            "student_tags": student_tags,
+            "student_goals": student_goals,
         }
 
         # ── Step 1: Hard Filters ──────────────────────────────────
@@ -803,11 +969,20 @@ async def match(request: MatchRequest):
                 total_classes_taught = total_classes_taught,
             )
 
-            # Priority boost / penalty (clamped to 0–100)
-            if priority == "high":
-                score = min(score + 5, 100.0)
-            elif priority == "low":
-                score = max(score - 5, 0.0)
+            load_balancing_adjustment = compute_load_balancing_adjustment(
+                current_students=current_stud,
+                max_students=max_cap,
+                trial_count=trial_count,
+            )
+            priority_adjustment = compute_priority_adjustment(priority)
+            personalization_adjustment = compute_personalization_adjustment(student_prefs, teacher_profile)
+            score = max(
+                min(
+                    score + load_balancing_adjustment + priority_adjustment + personalization_adjustment,
+                    100.0,
+                ),
+                0.0,
+            )
 
             results.append({
                 "teacher_id":           tid,
@@ -823,6 +998,9 @@ async def match(request: MatchRequest):
                 "current_students":     current_stud,
                 "free_capacity":        max(max_cap - current_stud, 0),
                 "teacher_tags":         tags_list,
+                "load_balancing_adjustment": load_balancing_adjustment,
+                "priority_adjustment":  priority_adjustment,
+                "personalization_adjustment": personalization_adjustment,
             })
 
         results.sort(
@@ -833,11 +1011,26 @@ async def match(request: MatchRequest):
                 len(x["recurring_slots"]),
                 len(x["available_slots"]),
                 x["free_capacity"],
+                x["load_balancing_adjustment"],
+                x["priority_adjustment"],
                 x["trial_conversion_rate"],
             ),
             reverse=True,
         )
+        if request.search_option == "earliest_available":
+            results.sort(
+                key=lambda x: (
+                    x["available_slots"][0] if x["available_slots"] else "Zzz 99:99",
+                    -x["match_score"],
+                )
+            )
         top = results[:5]
+        flexibility_suggestions = _build_flexibility_suggestions(
+            top,
+            request.preferred_days,
+            request.preferred_time_from,
+            request.preferred_time_to,
+        ) if request.allow_flexibility_suggestions else []
 
         return {
             "student_id":             request.student_id,
@@ -845,12 +1038,15 @@ async def match(request: MatchRequest):
             "student_native_language": native_language,
             "student_age":            student_age,
             "english_level":          english_level,
+            "student_tags":           student_tags,
+            "student_goals":          student_goals,
             "mode":                   request.mode,
             "preferred_days":         request.preferred_days,
             "preferred_time":         f"{request.preferred_time_from} - {request.preferred_time_to}",
             "sessions_per_week":      request.sessions_per_week,
             "teachers_found":         len(top),
             "results":                top,
+            "flexibility_suggestions": flexibility_suggestions,
         }
     finally:
         conn.close()
@@ -864,13 +1060,104 @@ def _empty_response(request, student, student_age, english_level, native_languag
         "student_native_language": native_language,
         "student_age":            student_age,
         "english_level":          english_level,
+        "student_tags":           request.student_tags,
+        "student_goals":          request.student_goals,
         "mode":                   request.mode,
         "preferred_days":         request.preferred_days,
         "preferred_time":         f"{request.preferred_time_from} - {request.preferred_time_to}",
         "sessions_per_week":      request.sessions_per_week,
         "teachers_found":         0,
         "results":                [],
+        "flexibility_suggestions": _build_flexibility_suggestions(
+            [],
+            request.preferred_days,
+            request.preferred_time_from,
+            request.preferred_time_to,
+        ) if request.allow_flexibility_suggestions else [],
     }
+
+
+def ensure_trial_feedback_table(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE SCHEMA IF NOT EXISTS analytics;
+        CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
+            feedback_id BIGSERIAL PRIMARY KEY,
+            class_id INT NOT NULL,
+            student_id INT NOT NULL,
+            teacher_id INT NOT NULL,
+            feedback_role TEXT NOT NULL CHECK (feedback_role IN ('student', 'teacher')),
+            trial_success BOOLEAN,
+            teacher_match_quality INT CHECK (teacher_match_quality BETWEEN 1 AND 5),
+            student_feedback TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    conn.commit()
+    cur.close()
+
+
+@app.post("/trial-feedback", response_model=TrialFeedbackResponse)
+async def submit_trial_feedback(request: TrialFeedbackRequest):
+    if request.feedback_role not in ("student", "teacher"):
+        raise HTTPException(status_code=400, detail="feedback_role must be 'student' or 'teacher'")
+    conn = get_db()
+    try:
+        ensure_trial_feedback_table(conn)
+        _, class_rows = q(conn, """
+            SELECT 1
+            FROM clean.classes
+            WHERE class_id = %s
+            LIMIT 1
+        """, (request.class_id,))
+        if not class_rows:
+            raise HTTPException(status_code=400, detail="class_id not found in clean.classes")
+
+        _, student_rows = q(conn, """
+            SELECT 1
+            FROM clean.students
+            WHERE student_id = %s
+            LIMIT 1
+        """, (request.student_id,))
+        if not student_rows:
+            raise HTTPException(status_code=400, detail="student_id not found in clean.students")
+
+        _, teacher_rows = q(conn, """
+            SELECT 1
+            FROM clean.teachers
+            WHERE teacher_id = %s
+            LIMIT 1
+        """, (request.teacher_id,))
+        if not teacher_rows:
+            raise HTTPException(status_code=400, detail="teacher_id not found in clean.teachers")
+
+        row = q_execute(conn, """
+            INSERT INTO analytics.trial_class_feedback (
+                class_id,
+                student_id,
+                teacher_id,
+                feedback_role,
+                trial_success,
+                teacher_match_quality,
+                student_feedback
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING feedback_id
+        """, (
+            request.class_id,
+            request.student_id,
+            request.teacher_id,
+            request.feedback_role,
+            request.trial_success,
+            request.teacher_match_quality,
+            request.student_feedback,
+        ))
+        return {
+            "feedback_id": int(row[0]),
+            "status": "created",
+        }
+    finally:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -897,6 +1184,7 @@ async def root():
         ],
         "endpoints": {
             "POST /match":  "Match teachers to a student",
+            "POST /trial-feedback": "Store post-trial feedback",
             "GET /health":  "Health check",
             "GET /docs":    "Swagger UI",
             "GET /redoc":   "ReDoc",

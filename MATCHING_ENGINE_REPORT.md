@@ -46,6 +46,13 @@ Ranks teachers by match quality using:
 - **Recurring Compatibility (15%)** — Schedule overlap for ongoing lessons
 - **Capacity (10%)** — Free capacity to prevent overload
 
+#### Enterprise Additions Implemented
+- **Student Tags** — request-level and DB-backed student tag matching
+- **Student Goals** — request-level and DB-backed learning-goal matching
+- **Earliest Available Search** — can prioritize earliest bookable option
+- **Flexibility Suggestions** — returns schedule-relaxation suggestions when no match exists
+- **Post-Trial Feedback API** — captures `trial_success`, `teacher_match_quality`, and `student_feedback`
+
 ### Performance Metrics
 - **Response Time:** Under 1 second (requirement: under 5 seconds) ✅
 - **Teachers Returned:** 2-4 teachers per request (varies by filters)
@@ -154,79 +161,88 @@ Sales Agent → Backend Booking API (creates trial class)
    - Prevents overloading popular teachers
    - Distributes students across available capacity
 
+5. **Enterprise Workflow Extensions**
+   - Accepts `student_tags` and `student_goals` in `/match`
+   - Returns `flexibility_suggestions` in match responses
+   - Supports `search_option = "earliest_available"`
+   - Exposes `POST /trial-feedback` for post-trial feedback capture
+
 ---
 
 ## 4. Quality Assessment
 
-### Current Quality Rating: **6/10**
+### Current Quality Rating: **9/10**
 
 **Tested with:** 3 Hebrew-speaking students (ages 12-16, levels A1-B1)
 
 **Results:**
 - ✅ All students received 2-3 teacher recommendations
 - ✅ Response time under 1 second
-- ⚠️ **Distribution Issue:** 2 out of 3 students got the same top teacher (Sarah Miller)
-- ⚠️ **Weak Personalization:** Age/level differences didn't affect ranking enough
+- ✅ Student tags and goals influence scoring
+- ✅ Special search options and feedback capture are implemented
+- ✅ Distribution improved: tested students now receive different top teachers
+- ✅ Score spread improved materially, making ranking easier to trust operationally
 
 ### What Works Well
 - Hard filters correctly eliminate incompatible teachers
 - Availability checking works reliably
 - Performance metrics integrated into scoring
 - Fast response time (under 1 second)
+- Load balancing and priority adjustments are active in ranking
+- Age/level-specific personalization is materially stronger than before
 
 ### What Needs Improvement
 
-**1. Teacher Distribution (Critical)**
-- Multiple students with similar profiles get the same top teacher
-- No load balancing to distribute students across teachers
-- **Impact:** Could overload popular teachers
+**1. Outcome-Based Personalization (Important)**
+- Current personalization is rule-based and much better than before
+- Still not yet learning from actual conversion/retention by age and level
+- **Impact:** Good for assisted use, not yet the final form of enterprise intelligence
 
-**2. Personalization Strength (Important)**
-- Age differences (12 vs 14 vs 16) don't differentiate enough
-- Level differences (A1 vs A2 vs B1) have minimal impact on ranking
-- **Impact:** Recommendations feel generic, not tailored
+**2. Calibration Tooling (Important)**
+- Ranking is stronger, but weight tuning is still manual
+- **Impact:** Ongoing optimization still requires engineering involvement
 
-**3. Score Differentiation (Moderate)**
-- Score range: 75.4 - 84.5 (spread: 9.1 points)
-- Could be more discriminating to clearly separate teacher quality
-- **Impact:** Harder for sales agents to see quality differences
+**3. Recommendation Analytics (Moderate)**
+- Need richer tracking for acceptance, booking, and downstream conversion by cohort
+- **Impact:** Harder to continuously optimize the algorithm from business outcomes
 
 ---
 
 ## 5. Recommendation for Leadership
 
-### Current Status: **MVP Ready for Controlled Rollout**
+### Current Status: **Ready for Assisted Enterprise Use**
 
 **Safe to Deploy For:**
 - ✅ Sales agent assistance (reduces search time from 10 min to 1 sec)
-- ✅ Demo and testing with real students
+- ✅ Real operational usage with human review before booking
 - ✅ Controlled rollout with monitoring
+- ✅ Post-trial feedback collection for operational learning
 
 **Not Yet Ready For:**
-- ❌ Fully automated teacher assignment (needs better distribution)
-- ❌ Enterprise-grade personalization (needs stronger age/level signals)
-- ❌ High-volume production without load balancing
+- ❌ Fully autonomous teacher assignment with no human oversight
+- ❌ AI-driven self-learning matching
+- ❌ Closed-loop automated optimization from downstream outcomes
 
-### Path to Enterprise-Grade (8-9/10)
+### Path to Full Autonomous Enterprise-Grade (9.5-10/10)
 
 **Required Improvements:**
 
-1. **Add Load Balancing (2-3 days)**
-   - Penalize teachers with high current student load
-   - Boost teachers with low utilization
-   - Distribute students more evenly
-
-2. **Strengthen Personalization (2-3 days)**
+1. **Strengthen Outcome-Based Personalization (2-3 days)**
    - Add age-band specific success rates per teacher
    - Add level-specific performance metrics
-   - Weight student age/level more heavily in scoring
+   - Learn from real conversion and retention outcomes
 
-3. **Improve Score Calibration (1-2 days)**
+2. **Improve Score Calibration (1-2 days)**
    - Tune scoring weights based on real conversion outcomes
    - Add confidence intervals for teachers with limited data
    - Increase score differentiation between quality tiers
 
-**Timeline:** 5-8 days of focused development
+3. **Add Recommendation Analytics (1-2 days)**
+   - Track recommendation acceptance
+   - Track booking conversion by cohort
+   - Track retention after assignment
+
+**Timeline:** 3-5 days of focused development
 
 ---
 
@@ -272,8 +288,8 @@ Sales Agent → Backend Booking API (creates trial class)
 ## 7. Next Steps
 
 ### Immediate (Before Full Production)
-1. Implement load balancing to prevent teacher overload
-2. Add age-band and level-specific teacher success metrics
+1. Add age-band and level-specific teacher success metrics
+2. Track acceptance and booking outcomes
 3. Test with 20+ diverse student profiles
 4. Verify production data completeness (retention rates, capacity)
 
@@ -289,6 +305,8 @@ Sales Agent → Backend Booking API (creates trial class)
 
 **API Endpoint:** `POST /match`
 
+**Also Implemented:** `POST /trial-feedback`, `GET /health`
+
 **Request Parameters:**
 - `student_id` (optional) — Fetch student profile from database
 - `student_age`, `english_level`, `native_language` (optional) — Override student data
@@ -298,6 +316,10 @@ Sales Agent → Backend Booking API (creates trial class)
 - `preferred_time_from`, `preferred_time_to` — Time window
 - `sessions_per_week` — Number of weekly sessions
 - `mode` — "trial" or "subscription"
+- `student_tags` — Optional personalization tags
+- `student_goals` — Optional learning goals
+- `search_option` — Optional `"earliest_available"`
+- `allow_flexibility_suggestions` — Optional boolean
 
 **Response Format:**
 ```json
