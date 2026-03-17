@@ -1,7 +1,7 @@
 # Matching Engine — Spec Compliance & Quality Assessment
 
-**Scope:** FastAPI implementation in `matching_engine.py` + `availability_service.py`  
-**Data:** PostgreSQL schemas `clean`, `analytics`, `serve`  
+**Scope:** FastAPI implementation in `matching_engine.py` + `availability_service.py`
+**Data:** PostgreSQL schemas `clean`, `analytics`, `serve`
 **Spec version referenced in code:** `Teacher-Student Matching Engine Feature Specification v1.0 (March 2026)`
 
 ---
@@ -14,7 +14,7 @@
   - `GET /health` — health check, returns `{"status": "ok"}`.
   - `GET /` — root info (version, changes, endpoint summary).
 
-✔️ **Compliant** with the spec’s requirement for a single `/match` endpoint and basic health/info endpoints.  
+✔️ **Compliant** with the spec’s requirement for a single `/match` endpoint and basic health/info endpoints.
 ➕ **Extension:** `/trial-feedback` for feedback capture (spec extension, not a deviation).
 
 ---
@@ -33,11 +33,9 @@
   - `requires_native_language_teacher`
   - `preferred_days`, `preferred_time_start`, `preferred_time_end`
   - `sessions_per_week`
-  - `language_preference`, `temperament`, `corrective_tolerance`, `scaffolding_preference`
   - `learning_goal` (via `FINAL_MIGRATION.sql`)
-  - `hobbies` → surfaced as `student_tags` where present
 
-✔️ **Compliant:** student preference dimensions are taken from `clean.students` as per migrations, not from separate `student_preferences` tables.  
+✔️ **Compliant:** student matching dimensions are taken from `clean.students` as per migrations, not from separate `student_preferences` tables.
 ➕ **Extension:** request-level overrides (`student_age`, `english_level`, `native_language`, `student_tags`, `student_goals`) merge cleanly with DB data.
 
 ### 2.2 Teachers
@@ -55,10 +53,9 @@
   - `max_students_capacity`
   - `trial_priority`
   - `languages_spoken`
-  - `teaching_style`, `correction_style`, `scaffolding_style`
   - `status = 'active'` (hard filter)
 
-✔️ **Compliant:** teacher style and capacity columns are used from `clean.teachers` (per `FINAL_MIGRATION.sql`), not from a separate `teacher_profile` table.
+✔️ **Compliant:** teacher tags, language and capacity columns are used from `clean.teachers` (per `FINAL_MIGRATION.sql`), not from a separate `teacher_profile` table.
 
 ### 2.3 Availability & Conflicts
 
@@ -81,7 +78,7 @@
 - `get_recurring_availability` — 4‑week recurring pattern check using holidays + classes (no schedule check, as in Node.js).
 - Occupancy helpers (`calculate_teacher_occupancy`, `get_active_student_count`) that match Node.js aggregation semantics.
 
-✔️ **Compliant:** day-of-week semantics, holiday checks, and class conflict detection are aligned with the documented Node.js behaviour.  
+✔️ **Compliant:** day-of-week semantics, holiday checks, and class conflict detection are aligned with the documented Node.js behaviour.
 ✔️ **Compliant:** subscription availability skips schedule checks and relies on conflict checks only, mirroring `monthly-class.controller.js`.
 
 ---
@@ -103,7 +100,7 @@ Applied in the main loop over `fetch_all_teachers(...)`:
   - Normalise requested native language via `LANGUAGE_CODE_MAP`.
   - Require it to be present in `languages_spoken`.
 
-✔️ **Compliant:** implements language, age, mode and native-language hard filters.  
+✔️ **Compliant:** implements language, age, mode and native-language hard filters.
 ➕ **Extension:** mode is explicitly validated to `"trial"` / `"subscription"` and invalid modes return 400.
 
 ### 3.2 Step 2 — Availability
@@ -123,7 +120,7 @@ All final slot strings are attached to:
 - `available_slots` (trial slots; empty in pure subscription mode).
 - `recurring_slots` (per‑day recurring options; always present when teacher passes filters).
 
-✔️ **Compliant:** availability is checked against real conflicts and holidays; subscription matching is based on recurring viability, not trial schedules.  
+✔️ **Compliant:** availability is checked against real conflicts and holidays; subscription matching is based on recurring viability, not trial schedules.
 ✔️ **Compliant:** day-of-week normalisation and preferred-days validation match the spec.
 
 ### 3.3 Step 3 — Scoring
@@ -133,10 +130,6 @@ The score is computed in `compute_score(...)` and then adjusted by three small p
 **Base score components (exact weights in code):**
 - **Student Fit — 30%**
   - Uses `compute_student_fit`, incorporating:
-    - Language preference (placeholder / neutral in current code).
-    - Temperament vs `teaching_style`.
-    - Corrective tolerance vs `correction_style`.
-    - Scaffolding preference vs `scaffolding_style`.
     - Age vs tags (kids, business, exam).
     - Level vs tags.
     - Tag overlap (student ↔ teacher tags).
@@ -149,8 +142,9 @@ The score is computed in `compute_score(...)` and then adjusted by three small p
 - **Performance — 20%**
   - `performance = conv_rate*0.40 + retention_rate*0.30 + quality_score*0.30` (all in 0–1 space).
   - Data sources:
-    - Conversion and quality: `analytics.class_facts`.
-    - Retention: `serve.teacher_performance_profile` or recomputed from trials and `subscription_active` events (see `fetch_all_retention_rates`).
+    - Conversion: `clean.classes` + `analytics.leads`.
+    - Quality: `analytics.class_facts`.
+    - Retention: `serve.teacher_performance_profile`.
 
 - **Recurring Compatibility — 15%**
   - Fraction of preferred days that have at least one slot in `score_slots`.
@@ -164,7 +158,7 @@ The score is computed in `compute_score(...)` and then adjusted by three small p
 - `compute_priority_adjustment` — honours `trial_priority = 'high' | 'normal' | 'low' | 'disabled'`.
 - `compute_personalization_adjustment` — extra age/level/tag-based tuning for kids vs teens, beginners vs advanced.
 
-✔️ **Compliant:** weights and core factors match the documented spec; retention has been fully wired into performance as per the v1.1.0 fix.  
+✔️ **Compliant:** weights and core factors match the documented spec; retention has been fully wired into performance as per the v1.1.0 fix.
 ➕ **Extension:** additional small calibration terms (load balancing, priority, personalisation) improve operational behaviour without breaking the spec’s weighting.
 
 ---
@@ -196,24 +190,24 @@ This section focuses on the implementation itself (code + data use), not busines
 
 These are sourced directly from the code and existing analysis notes; no new claims are made:
 
-- **Outcome calibration:**  
+- **Outcome calibration:**
   The scoring formula is hand‑tuned rather than learned from downstream conversion/retention; rank‑1 accuracy is therefore not yet calibrated from live outcomes.
 
-- **Sparse data behaviour:**  
+- **Sparse data behaviour:**
   Teachers with little or no history (few trials, few classes) get neutral-ish performance components and can still surface on the shortlist. The code does include a small “sparse data penalty”, but there is no explicit minimum-evidence threshold.
 
-- **Capacity modelling edge cases:**  
+- **Capacity modelling edge cases:**
   Active student counts are computed from a mix of subscriptions and classes; unusual legacy or edge-case data patterns could cause slight over‑ or under‑counting until fully validated on production‑scale datasets.
 
-- **Preference completeness:**  
+- **Preference completeness:**
   Several preference fields (e.g. hobbies/tags, goals) depend on data population quality in `clean.students` and `clean.teachers`. Where data is missing, the engine intentionally falls back to neutral weights (0.5), which is safe but less discriminative.
 
 ### 4.3 Readiness Summary
 
-- **For assisted use (human-in-the-loop):**  
+- **For assisted use (human-in-the-loop):**
   ✅ Ready. The implementation is consistent, explainable, and aligned with the spec. It reliably produces a sensible shortlist and exposes enough detail for humans to make the final call.
 
-- **For fully autonomous assignment:**  
+- **For fully autonomous assignment:**
   ⚠️ Not yet recommended. The engine does not yet close the loop on outcome-based calibration (conversion/retention by archetype) and still relies on hand-tuned weights.
 
 ---
@@ -228,8 +222,8 @@ These are sourced directly from the code and existing analysis notes; no new cla
 | Trial availability (3-layer logic)     | ✅ Implemented | `AvailabilityService.get_trial_availability` |
 | Subscription availability (4-week)     | ✅ Implemented | `AvailabilityService.get_recurring_availability` |
 | Day-of-week canonical mapping          | ✅ Implemented | 0=Sunday shared between both modules (FIX #4) |
-| Performance metrics (conv, quality)    | ✅ Implemented | `analytics.class_facts` aggregation |
-| Retention metric                       | ✅ Implemented | `serve.teacher_performance_profile` + fallback (FIX #3) |
+| Performance metrics (conversion, quality) | ✅ Implemented | `clean.classes` + `analytics.leads`, `analytics.class_facts` |
+| Retention metric                       | ✅ Implemented | `serve.teacher_performance_profile` |
 | Scoring weights (30/25/20/15/10)       | ✅ Implemented | `compute_score` |
 | Load balancing / capacity              | ✅ Implemented | `fetch_all_student_counts`, adjustments |
 | Student tags & goals in scoring        | ✅ Implemented | `compute_student_fit` and personalisation adjustment |

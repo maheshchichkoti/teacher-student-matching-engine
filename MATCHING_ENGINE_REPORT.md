@@ -38,7 +38,7 @@ Finds open time slots by:
 
 #### Layer 3: Weighted Scoring
 Ranks teachers by match quality using:
-- **Student Fit (30%)** — Age, level, language, temperament compatibility
+- **Student Fit (30%)** — Age, level, teacher-tag compatibility and learning-goal alignment
 - **Availability Fit (25%)** — How well slots match student preferences
 - **Performance (20%)** — Conversion rate, retention, quality scores
 - **Recurring Compatibility (15%)** — Schedule overlap for ongoing lessons
@@ -52,19 +52,19 @@ Ranks teachers by match quality using:
 - **Retention-aware performance** — a dedicated retention component has been added to the performance score (see FIX #3 below).
 
 #### v1.1.0 Fixes Implemented (matching the spec comments in `matching_engine.py`)
-- **FIX #1 — Subscription mode no longer returns 0 teachers**  
+- **FIX #1 — Subscription mode no longer returns 0 teachers**
   Subscription searches now require at least one recurring slot per teacher (built via `AvailabilityService.get_recurring_availability`) instead of reusing trial slots, so valid subscription teachers are surfaced correctly.
 
-- **FIX #2 — Native language hard filter uses `languages_spoken`**  
+- **FIX #2 — Native language hard filter uses `languages_spoken`**
   The native-language requirement now checks `clean.teachers.languages_spoken` rather than `teaching_languages`, which aligns with how real teacher data is stored.
 
-- **FIX #3 — Retention rate added to performance score and surfaced in the API**  
-  Per‑teacher 90‑day retention is read from `serve.teacher_performance_profile` or recomputed from `analytics.class_facts`, blended into the performance component and returned as `retention_rate` in each teacher result.
+- **FIX #3 — Retention rate added to performance score and surfaced in the API**
+  Per‑teacher retention is read from `serve.teacher_performance_profile`, blended into the performance component and returned as `retention_rate` in each teacher result.
 
-- **FIX #4 — Day-of-week convention unified (0=Sunday) across engine and availability service**  
+- **FIX #4 — Day-of-week convention unified (0=Sunday) across engine and availability service**
   Both `matching_engine.py` and `availability_service.py` share the same canonical mapping: index 0 = Sunday, directly matching `clean.teacher_availability.day_of_week`.
 
-- **FIX #5 — `recurring_slots` present for every teacher result**  
+- **FIX #5 — `recurring_slots` present for every teacher result**
   Responses now always include a `recurring_slots` array per teacher (empty only when not applicable), making subscription options explicit for consumers of the API.
 
 ### Performance Metrics
@@ -145,8 +145,9 @@ Sales Agent → Backend Booking API (creates trial class)
 - `clean.teacher_holidays` — Holiday dates for conflict checking
 
 **Performance Data:**
-- `analytics.class_facts` — Trial conversion events
-- `serve.teacher_performance_profile` — Retention rates, quality scores
+- `clean.classes` + `analytics.leads` — Trial conversion and trial counts
+- `analytics.class_facts` — Lesson quality scores
+- `serve.teacher_performance_profile` — Retention rates, ratings, verification
 
 **Capacity Data:**
 - `clean.subscriptions` — Active subscriptions

@@ -227,15 +227,42 @@ class AvailabilityService:
         2. Have an active subscription (status='active' in user_subscription_details)
         """
         query = """
-            SELECT COUNT(DISTINCT s.student_id) as count
-            FROM clean.students s
-            INNER JOIN analytics.class_facts cf ON s.student_id = cf.student_id
-            WHERE cf.teacher_id = %s
-              AND cf.event_type = 'subscription_active'
+            WITH active_subscriptions AS (
+                SELECT subscription_id, owner_student_id
+                FROM clean.subscriptions
+                WHERE status = 'active'
+            ),
+            active_subscription_students AS (
+                SELECT DISTINCT
+                    c.teacher_id,
+                    COALESCE(sm.student_id, s.owner_student_id, c.student_id) AS student_id
+                FROM clean.classes c
+                JOIN active_subscriptions s
+                  ON s.subscription_id = c.subscription_id
+                LEFT JOIN clean.subscription_members sm
+                  ON sm.subscription_id = s.subscription_id
+                 AND sm.status = 'active'
+                WHERE c.teacher_id = %s
+                  AND c.lifecycle_status IN ('confirmed', 'in_progress', 'completed_raw', 'completed_ai', 'verified')
+            ),
+            active_non_subscription_students AS (
+                SELECT DISTINCT c.teacher_id, c.student_id
+                FROM clean.classes c
+                WHERE c.teacher_id = %s
+                  AND c.subscription_id IS NULL
+                  AND c.lifecycle_status IN ('confirmed', 'in_progress')
+            ),
+            active_students AS (
+                SELECT teacher_id, student_id FROM active_subscription_students
+                UNION
+                SELECT teacher_id, student_id FROM active_non_subscription_students
+            )
+            SELECT COUNT(DISTINCT student_id) AS count
+            FROM active_students
         """
 
         cur = self.conn.cursor()
-        cur.execute(query, (teacher_id,))
+        cur.execute(query, (teacher_id, teacher_id))
         result = cur.fetchone()
         cur.close()
 
@@ -257,16 +284,16 @@ class AvailabilityService:
                 'conversion_rate': float
             }
         """
-        # Get trial classes in period using analytics schema
+        # Get trial classes in period
         end_date = datetime.now(pytz.UTC)
         start_date = end_date - timedelta(days=period_days)
 
         query = """
-            SELECT COUNT(*) as count
-            FROM analytics.class_facts cf
-            WHERE cf.teacher_id = %s
-              AND cf.event_type = 'trial_started'
-              AND cf.event_date BETWEEN %s AND %s
+            SELECT COUNT(*) AS count
+            FROM clean.classes c
+            WHERE c.teacher_id = %s
+              AND c.is_trial = TRUE
+              AND c.meeting_start BETWEEN %s AND %s
         """
 
         cur = self.conn.cursor()
@@ -282,13 +309,16 @@ class AvailabilityService:
                 'conversion_rate': 0.0
             }
 
-        # Get conversions (subscriptions created within 30 days of trial)
+        # Get conversions using funnel stage
         query = """
-            SELECT COUNT(DISTINCT cf.student_id) as count
-            FROM analytics.class_facts cf
-            WHERE cf.teacher_id = %s
-              AND cf.event_type = 'trial_converted'
-              AND cf.event_date BETWEEN %s AND %s
+            SELECT COUNT(DISTINCT c.student_id) AS count
+            FROM clean.classes c
+            INNER JOIN analytics.leads l
+              ON l.converted_student_id = c.student_id
+            WHERE c.teacher_id = %s
+              AND c.is_trial = TRUE
+              AND c.meeting_start BETWEEN %s AND %s
+              AND l.funnel_stage = 'converted'
         """
 
         cur = self.conn.cursor()
@@ -612,16 +642,18 @@ class AvailabilityService:
             return {}
 
     def _calculate_booked_slots(self, teacher_id: int) -> int:
-        """Calculate booked slots from regular classes using clean schema"""
-        # Get regular classes with duration
+        """
+        Calculate booked slots by looking at actual scheduled classes for the upcoming 7 days.
+        Uses the unified clean.classes table.
+        """
         query = """
-            SELECT rc.day, rc.start_time, rc.timezone, cf.lesson_min
-            FROM clean.regular_classes rc
-            LEFT JOIN analytics.class_facts cf ON rc.class_id = cf.class_id
-            LEFT JOIN clean.students s ON rc.student_id = s.student_id
-            WHERE rc.teacher_id = %s
-              AND s.status = 'active'
-              AND rc.status = 'active'
+            SELECT
+                meeting_start,
+                COALESCE(meeting_end, meeting_start + INTERVAL '30 minutes') AS meeting_end
+            FROM clean.classes
+            WHERE teacher_id = %s
+              AND meeting_start BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+              AND lifecycle_status IN ('confirmed', 'in_progress')
         """
 
         cur = self.conn.cursor()
@@ -631,10 +663,10 @@ class AvailabilityService:
 
         booked_slots = 0
         for row in results:
-            duration = row[3] or 30  # Default 30 minutes
-
-            # Calculate slots spanned by this class
-            slots_to_span = (duration + 29) // 30  # Round up to nearest 30
-            booked_slots += slots_to_span
+            start_time = row[0]
+            end_time = row[1]
+            duration_minutes = (end_time - start_time).total_seconds() / 60.0
+            slots_to_span = int((duration_minutes + 29) // 30)
+            booked_slots += max(1, slots_to_span)
 
         return booked_slots

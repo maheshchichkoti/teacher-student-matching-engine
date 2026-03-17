@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SahioNext Matching Demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #081120;
+      --bg-accent: radial-gradient(circle at top, rgba(37, 99, 235, 0.18), transparent 36%), radial-gradient(circle at right, rgba(14, 165, 233, 0.14), transparent 28%), #081120;
+      --card: rgba(15, 23, 42, 0.9);
+      --card-border: rgba(148, 163, 184, 0.18);
+      --card-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --soft: #cbd5e1;
+      --input: #0b1220;
+      --primary: #2563eb;
+      --primary-2: #38bdf8;
+      --success: #86efac;
+      --danger: #fca5a5;
+      --pill: #172554;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: var(--bg-accent); color: var(--text); min-height: 100vh; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 32px 24px 48px; }
+    h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.1; }
+    h3 { margin: 0 0 6px; }
+    .sub { color: var(--muted); margin-bottom: 24px; max-width: 840px; line-height: 1.6; }
+    .hero { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 20px; }
+    .hero-badge { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: rgba(37, 99, 235, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); color: #bfdbfe; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 18px; padding: 22px; box-shadow: var(--card-shadow); backdrop-filter: blur(14px); }
+    .card h2 { margin: 0 0 8px; font-size: 19px; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+    label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--soft); font-weight: 600; }
+    input, select, textarea { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.24); background: var(--input); color: var(--text); outline: none; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+    input:focus, select:focus, textarea:focus { border-color: rgba(56, 189, 248, 0.55); box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16); transform: translateY(-1px); }
+    button { background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff; border: 0; border-radius: 10px; padding: 11px 16px; cursor: pointer; margin-top: 14px; font-weight: 700; letter-spacing: .01em; box-shadow: 0 16px 30px rgba(37, 99, 235, 0.26); }
+    button.secondary { background: rgba(51, 65, 85, 0.75); box-shadow: none; border: 1px solid rgba(148, 163, 184, 0.18); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .results { margin-top: 24px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0 0; }
+    .metric { padding: 14px; border-radius: 14px; border: 1px solid var(--card-border); background: rgba(15, 23, 42, 0.72); }
+    .metric .label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .metric .value { font-size: 22px; font-weight: 700; }
+    .result { background: rgba(15, 23, 42, 0.92); border: 1px solid var(--card-border); border-radius: 18px; padding: 18px; margin-bottom: 14px; box-shadow: var(--card-shadow); }
+    .result-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 8px; }
+    .score { font-size: 24px; font-weight: 800; color: #bfdbfe; }
+    .small { font-size: 13px; color: var(--muted); }
+    .pill { display: inline-block; padding: 5px 9px; margin: 4px 6px 0 0; background: var(--pill); border: 1px solid rgba(96, 165, 250, 0.18); border-radius: 999px; font-size: 12px; color: #dbeafe; }
+    .slots { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(148, 163, 184, 0.14); }
+    .slots strong { display: block; margin-bottom: 4px; color: var(--soft); }
+    .ok { color: var(--success); }
+    .err { color: var(--danger); }
+    .empty { padding: 18px; border-radius: 16px; background: rgba(127, 29, 29, 0.22); border: 1px solid rgba(248, 113, 113, 0.18); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .card-wide { margin-top: 20px; }
+    @media (max-width: 980px) { .grid, .row, .summary { grid-template-columns: 1fr; } .hero { flex-direction: column; } .result-top { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <div class="hero-badge">Matching Engine Demo</div>
+        <h1>Teacher-Student Matching Demo</h1>
+        <div class="sub">Use the same backend to test existing students, new intake scenarios, native-language requirements, recurring-slot viability, and score quality from one place.</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Existing Student</h2>
+        <div class="hint">Use this when the student already exists in <code>clean.students</code>. Scheduling inputs still come from the request so sales can test real availability windows.</div>
+        <label>Student ID</label>
+        <input id="studentId" type="number" placeholder="e.g. 930" />
+        <div class="row">
+          <div>
+            <label>Preferred Days</label>
+            <input id="existingDays" placeholder="Sunday, Tuesday" />
+          </div>
+          <div>
+            <label>Mode</label>
+            <select id="existingMode">
+              <option value="trial">trial</option>
+              <option value="subscription">subscription</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Time From</label>
+            <input id="existingFrom" value="16:00" />
+          </div>
+          <div>
+            <label>Time To</label>
+            <input id="existingTo" value="21:00" />
+          </div>
+        </div>
+        <button onclick="matchExisting()">Match Existing Student</button>
+      </div>
+
+      <div class="card">
+        <h2>New Student Intake</h2>
+        <div class="hint">Use this when testing new trial leads. These fields map directly to the backend’s real filters and scoring inputs.</div>
+        <div class="row">
+          <div>
+            <label>Age</label>
+            <input id="age" type="number" />
+          </div>
+          <div>
+            <label>English Level</label>
+            <select id="level">
+              <option value="A1">A1</option>
+              <option value="A2">A2</option>
+              <option value="B1">B1</option>
+              <option value="B2">B2</option>
+              <option value="C1">C1</option>
+              <option value="C2">C2</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Target Language</label>
+            <input id="targetLanguage" value="English" />
+          </div>
+          <div>
+            <label>Native Language</label>
+            <input id="nativeLanguage" placeholder="Hebrew" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Preferred Days</label>
+            <input id="days" placeholder="Sunday, Tuesday" />
+          </div>
+          <div>
+            <label>Student Tags</label>
+            <input id="tags" placeholder="grammar_focus, energetic" />
+          </div>
+        </div>
+        <label>Learning Goals</label>
+        <input id="goals" placeholder="conversation, exam, business" />
+        <div class="row">
+          <div>
+            <label>Time From</label>
+            <input id="from" value="16:00" />
+          </div>
+          <div>
+            <label>Time To</label>
+            <input id="to" value="21:00" />
+          </div>
+        </div>
+        <label>Requires Native Language Teacher</label>
+        <select id="requiresNative">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+        <button onclick="matchNew()">Match New Student</button>
+      </div>
+    </div>
+
+    <div class="card card-wide">
+      <h2>CSV Demo Flow</h2>
+      <div class="small">Use <code>python export_csv.py</code> to generate local teacher/student CSVs for demo snapshots. This UI still calls the same API so you keep one backend and one deployment.</div>
+      <div class="actions">
+        <button class="secondary" onclick="window.location='/matching-engine-explainer'">Open Explainer</button>
+      </div>
+      <div id="status" class="small" style="margin-top:10px;"></div>
+      <div class="summary" id="summary"></div>
+    </div>
+
+    <div class="results" id="results"></div>
+  </div>
+
+  <script>
+    function parseList(value) {
+      return value.split(',').map(v => v.trim()).filter(Boolean);
+    }
+
+    function renderResults(data) {
+      const root = document.getElementById('results');
+      const summary = document.getElementById('summary');
+      if (!data || !data.results || !data.results.length) {
+        summary.innerHTML = '';
+        root.innerHTML = '<div class="empty err">No matches returned for the current constraints.</div>';
+        return;
+      }
+      summary.innerHTML = `
+        <div class="metric"><div class="label">Teachers Found</div><div class="value">${data.teachers_found ?? data.results.length}</div></div>
+        <div class="metric"><div class="label">Mode</div><div class="value">${data.mode || '-'}</div></div>
+        <div class="metric"><div class="label">Preferred Time</div><div class="value">${data.preferred_time || '-'}</div></div>
+        <div class="metric"><div class="label">Student</div><div class="value">${data.student_name || data.student_id || 'New'}</div></div>
+      `;
+      root.innerHTML = data.results.map(t => `
+        <div class="result">
+          <div class="result-top">
+            <div>
+              <h3>${t.name || 'Teacher'}</h3>
+              <div class="small">Conversion: ${t.trial_conversion_rate ?? '-'} | Retention: ${t.retention_rate ?? '-'} | Quality: ${t.lesson_quality_score ?? '-'} | Current Students: ${t.current_students ?? '-'} | Free Capacity: ${t.free_capacity ?? '-'}</div>
+            </div>
+            <div class="score">${t.match_score}%</div>
+          </div>
+          <div>${(t.teacher_tags || []).map(tag => `<span class="pill">${tag}</span>`).join('')}</div>
+          <div class="slots"><strong>Trial Slots</strong>${(t.available_slots || []).join(', ') || '-'}</div>
+          <div class="slots"><strong>Recurring Slots</strong>${(t.recurring_slots || []).join(', ') || '-'}</div>
+        </div>
+      `).join('');
+    }
+
+    async function callMatch(payload) {
+      const status = document.getElementById('status');
+      status.innerHTML = 'Calling /match ...';
+      try {
+        const res = await fetch('/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Match failed');
+        status.innerHTML = '<span class="ok">Match completed.</span>';
+        renderResults(data);
+      } catch (e) {
+        status.innerHTML = `<span class="err">${e.message}</span>`;
+      }
+    }
+
+    function matchExisting() {
+      callMatch({
+        student_id: Number(document.getElementById('studentId').value),
+        preferred_days: parseList(document.getElementById('existingDays').value),
+        preferred_time_from: document.getElementById('existingFrom').value,
+        preferred_time_to: document.getElementById('existingTo').value,
+        mode: document.getElementById('existingMode').value
+      });
+    }
+
+    function matchNew() {
+      callMatch({
+        student_age: Number(document.getElementById('age').value),
+        english_level: document.getElementById('level').value,
+        target_language: document.getElementById('targetLanguage').value,
+        native_language: document.getElementById('nativeLanguage').value,
+        requires_native_language_teacher: document.getElementById('requiresNative').value === 'true',
+        preferred_days: parseList(document.getElementById('days').value),
+        preferred_time_from: document.getElementById('from').value,
+        preferred_time_to: document.getElementById('to').value,
+        mode: 'trial',
+        student_tags: parseList(document.getElementById('tags').value),
+        student_goals: parseList(document.getElementById('goals').value)
+      });
+    }
+  </script>
+</body>
+</html>

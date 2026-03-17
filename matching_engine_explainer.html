@@ -226,8 +226,8 @@
   <div class="sec-title"><span class="sec-num">3</span> What data is used — and where it comes from</div>
 
   <div class="ok-box">
-    All of the following comes from the live PostgreSQL schemas used by the matching engine.  
-    Student preferred schedule is still provided in the request body.
+    All of the following comes from the live PostgreSQL schemas used by the matching engine.
+    Student preferred schedule is provided by the request body, while core student profile fields can come from <code>clean.students</code>.
   </div>
 
   <table>
@@ -278,8 +278,8 @@
       </tr>
       <tr>
         <td>Trial conversion rate</td>
-        <td><code>analytics.class_facts</code></td>
-        <td><code>event_type IN ('trial_started','trial_converted')</code></td>
+        <td><code>clean.classes</code> + <code>analytics.leads</code></td>
+        <td><code>is_trial = true</code> + <code>funnel_stage</code></td>
         <td>Aggregated per teacher</td>
         <td><span class="real">REAL (computed)</span></td>
       </tr>
@@ -307,7 +307,7 @@
       <tr>
         <td>Student profile + preferences</td>
         <td><code>clean.students</code></td>
-        <td><code>native_language, cefr_level, student_age, hobbies, language_preference, temperament, corrective_tolerance, scaffolding_preference, learning_goal</code></td>
+        <td><code>native_language, cefr_level, student_age, target_language, requires_native_language_teacher, learning_goal</code></td>
         <td>Loaded when <code>student_id</code> is provided</td>
         <td><span class="real">REAL</span></td>
       </tr>
@@ -351,7 +351,7 @@
         <span class="sc-pct">30%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:30%;background:#3b82f6;"></div></div>
-      <div class="sc-desc">Multi‑dimension preference fit: temperament, correction style, scaffolding preference, age range, CEFR level, tag overlap and learning goals. Each dimension defaults to 0.5 (neutral) when data is missing and is down‑weighted to 0.3 on clear mismatches.</div>
+      <div class="sc-desc">Student fit uses age range, CEFR level, tag overlap and learning goals. It is intentionally tag-based and avoids sparse style columns.</div>
     </div>
     <div class="score-card">
       <div class="sc-top">
@@ -409,9 +409,9 @@
       </tr>
       <tr>
         <td>2</td>
-        <td><code>SELECT … FROM analytics.class_facts …</code></td>
-        <td>Per‑teacher trial conversion, lesson quality and counts</td>
-        <td>Maps: teacher_id → conv%, quality, trials</td>
+        <td><code>SELECT … FROM clean.classes + analytics.leads …</code></td>
+        <td>Per‑teacher trial conversion and trial counts</td>
+        <td>Maps: teacher_id → conv%, trials</td>
       </tr>
       <tr>
         <td>3</td>
@@ -453,9 +453,9 @@
   "mode": "trial"
 }
 
-student_id     → fetches real student data from DB (name, language, learning goal)
-preferred_days → days agent tells us student can do (not in DB yet)
-preferred_time → time range agent tells us (not in DB yet)
+student_id     → fetches core student data from DB when available
+preferred_days → schedule constraint supplied by UI / sales workflow
+preferred_time → time range supplied by UI / sales workflow
 mode           → "trial" or "subscription"</pre>
   </div>
 
@@ -508,17 +508,17 @@ mode           → "trial" or "subscription"</pre>
   <div class="sec-title"><span class="sec-num">8</span> Assumptions &amp; limitations</div>
 
   <div class="warn-box">
-    <strong>Key point:</strong> student preferred schedule still arrives only via the request body. All other inputs used by the engine come from the PostgreSQL schemas shown above.
+    <strong>Key point:</strong> preferred schedule still arrives via the request body. Core student and teacher matching attributes come from PostgreSQL.
   </div>
 
   <ul class="assumption-list">
     <li data-n="1"><strong>preferred_days / preferred_time</strong> <span class="tag-hard">REQUEST-ONLY</span> — passed in the request body via FastAPI. Not yet captured at student signup; mobile/web clients must continue sending this explicitly.</li>
     <li data-n="2"><strong>Student learning goal</strong> <span class="tag-real">REAL</span> — taken from <code>clean.students.learning_goal</code> when present. If empty, the engine simply treats goals as an empty list (neutral for scoring).</li>
     <li data-n="3"><strong>MAX_CAPACITY fallback</strong> <span class="tag-hard">DEFAULT</span> — if <code>clean.teachers.max_students_capacity</code> is NULL, the code uses a constant of 20 as a safe default.</li>
-    <li data-n="4"><strong>trial_conversion_rate</strong> <span class="tag-real">REAL</span> — computed from <code>analytics.class_facts</code> events (<code>trial_started</code> vs <code>trial_converted</code>) with a hard cap at 100%.</li>
+    <li data-n="4"><strong>trial_conversion_rate</strong> <span class="tag-real">REAL</span> — computed from <code>clean.classes</code> trial rows joined with <code>analytics.leads.funnel_stage</code>.</li>
     <li data-n="5"><strong>lesson_quality_score</strong> <span class="tag-real">REAL</span> — average of grammar/vocabulary/fluency scores in <code>analytics.class_facts</code>, normalised to 0–100.</li>
-    <li data-n="6"><strong>Retention</strong> <span class="tag-real">REAL</span> — where available, comes from <code>serve.teacher_performance_profile.student_retention_rate</code>; otherwise recomputed from trial/subscription events over a 90‑day window.</li>
-    <li data-n="7"><strong>Teacher styles &amp; tags</strong> <span class="tag-real">REAL</span> — <code>teaching_style</code>, <code>correction_style</code>, <code>scaffolding_style</code> and <code>teacher_tags</code> are stored in <code>clean.teachers</code> and used for preference fit and personalisation adjustments.</li>
+    <li data-n="6"><strong>Retention</strong> <span class="tag-real">REAL</span> — sourced from <code>serve.teacher_performance_profile.student_retention_rate</code>.</li>
+    <li data-n="7"><strong>Teacher tags</strong> <span class="tag-real">REAL</span> — <code>teacher_tags</code> in <code>clean.teachers</code> drive fit and personalisation adjustments.</li>
     <li data-n="8"><strong>Teacher native language matching</strong> <span class="tag-real">REAL</span> — implemented via <code>clean.teachers.languages_spoken</code> when <code>requires_native_language_teacher = true</code>. If the student's native language is not present in that list, the teacher is filtered out.</li>
     <li data-n="9"><strong>Student level matching</strong> — uses <code>clean.students.cefr_level</code> when present; otherwise that dimension falls back to neutral (0.5) in <code>compute_student_fit</code>.</li>
     <li data-n="10"><strong>current_students count</strong> <span class="tag-real">REAL</span> — calculated from subscription + non‑subscription classes as implemented in <code>fetch_all_student_counts</code>. It may slightly over‑ or under‑count in unusual edge cases but is consistent across all teachers.</li>

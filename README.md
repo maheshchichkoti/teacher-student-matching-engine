@@ -1,6 +1,6 @@
 # Tulkka Matching Engine
 
-Rule-based teacher-student matching API running on FastAPI + PostgreSQL.  
+Rule-based teacher-student matching API running on FastAPI + PostgreSQL.
 Takes a student ID + preferred schedule and returns a ranked shortlist of teachers with scores and slots.
 
 ## Setup
@@ -39,7 +39,7 @@ curl -X POST http://localhost:5050/match \
 
 | File | Purpose |
 |------|---------|
-| `matching_engine.py` | Main FastAPI app — all matching, scoring and API endpoints (`/match`, `/trial-feedback`, `/health`, `/`) |
+| `matching_engine.py` | Main FastAPI app — all matching, scoring and API endpoints (`/match`, `/trial-feedback`, `/health`, `/`, `/demo`, `/matching-engine-explainer`) |
 | `availability_service.py` | Availability + conflict logic mirroring the Node.js scheduling behaviour on PostgreSQL data |
 | `run_server.py` | Convenience entrypoint to start the FastAPI app on port 5050 |
 | `matching_engine_explainer.html` | Human-friendly explainer of what the engine does, data sources and scoring (kept in sync with the code) |
@@ -53,9 +53,9 @@ Weights and logic come directly from `compute_score` in `matching_engine.py`:
 
 | Factor | Weight | Source in code / DB |
 |--------|--------|---------------------|
-| Student fit (preferences, age, level, tags, goals) | 30% | `compute_student_fit` using `clean.students` preference columns + request-level tags/goals |
+| Student fit (age, level, tags, goals) | 30% | `compute_student_fit` using `clean.students` core fields + request-level tags/goals |
 | Availability fit (trial/recurring slots) | 25% | Matching between preferred window and slots from `clean.teacher_availability` + `AvailabilityService` |
-| Performance (conversion + retention + lesson quality) | 20% | Aggregates from `analytics.class_facts` and `serve.teacher_performance_profile` |
+| Performance (conversion + retention + lesson quality) | 20% | Conversion from `clean.classes` + `analytics.leads`, retention from `serve.teacher_performance_profile`, quality from `analytics.class_facts` |
 | Recurring compatibility (day coverage) | 15% | How many preferred days have viable recurring slots (`recurring_slots`) |
 | Capacity (free students) | 10% | Active student counts from `clean.classes`, `clean.subscriptions`, `clean.subscription_members` vs `max_students_capacity` |
 
@@ -94,12 +94,13 @@ Optional fields supported by the implementation:
 - `search_option` (e.g. `"earliest_available"`)
 - `allow_flexibility_suggestions` (boolean)
 
-**GET `/health`** — returns `{"status": "ok"}`  
+**GET `/health`** — returns `{"status": "ok"}`
 **GET `/`** — Returns basic API information, version and implemented fixes
+**GET `/demo`** — CSV/demo UI served from the same FastAPI app
+**GET `/matching-engine-explainer`** — explainer page for stakeholders
 
 **POST `/trial-feedback`** — writes one row into `analytics.trial_class_feedback` with:
 - `class_id`, `student_id`, `teacher_id`,
-- `feedback_role` (`"student"` or `"teacher"`),
 - `trial_success`, `teacher_match_quality`, `student_feedback`.
 
 ## Development
@@ -116,10 +117,4 @@ For production, use a production ASGI server, pointing at the `app` in `matching
 
 ```bash
 uvicorn matching_engine:app --host 0.0.0.0 --port 5050 --workers 4
-```
-
-Or with gunicorn:
-
-```bash
-gunicorn matching_engine:app --workers 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:5050
 ```

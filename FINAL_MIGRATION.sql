@@ -54,8 +54,7 @@ CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
     class_id INT NOT NULL,
     student_id INT NOT NULL,
     teacher_id INT NOT NULL,
-    feedback_role TEXT NOT NULL CHECK (feedback_role IN ('student', 'teacher')),
-    trial_success BOOLEAN,
+    trial_success BOOLEAN NOT NULL DEFAULT FALSE,
     teacher_match_quality INT CHECK (teacher_match_quality BETWEEN 1 AND 5),
     student_feedback TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -80,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_teachers_trial_enabled ON clean.teachers(trial_en
 CREATE INDEX IF NOT EXISTS idx_teachers_age_range ON clean.teachers(age_min, age_max);
 CREATE INDEX IF NOT EXISTS idx_teachers_capacity ON clean.teachers(max_students_capacity);
 CREATE INDEX IF NOT EXISTS idx_teachers_priority ON clean.teachers(trial_priority);
+CREATE INDEX IF NOT EXISTS idx_teachers_teaching_lang ON clean.teachers USING GIN(teaching_languages);
 CREATE INDEX IF NOT EXISTS idx_teachers_tags ON clean.teachers USING GIN(teacher_tags);
 CREATE INDEX IF NOT EXISTS idx_teachers_languages_spoken ON clean.teachers USING GIN(languages_spoken);
 

@@ -24,7 +24,7 @@ A FastAPI-based matching engine that:
 1. **Hard Filters** — Eliminates incompatible teachers
    - Language teaching capability (target_language)
    - Age range compatibility (student_age vs teacher age_min/age_max)
-   - Mode eligibility (trial_enabled / recurring_enabled)
+   - Mode eligibility (`trial_enabled` for trial mode; recurring mode validated through recurring availability)
    - Native language requirement (if requires_native_language_teacher = true)
 
 2. **Availability Checking** — Finds open time slots
@@ -34,7 +34,7 @@ A FastAPI-based matching engine that:
    - Returns both trial slots and recurring slots
 
 3. **Weighted Scoring** — Ranks teachers by match quality
-   - Student Fit (30%): Age, level, language, temperament compatibility
+   - Student Fit (30%): Age, level, teacher-tag compatibility and learning-goal alignment
    - Availability Fit (25%): How well slots match student preferences
    - Performance (20%): Conversion rate, retention, quality scores
    - Recurring Compatibility (15%): Schedule overlap for ongoing lessons

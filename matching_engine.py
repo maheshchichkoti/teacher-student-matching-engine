@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
@@ -38,6 +39,8 @@ app = FastAPI(
     description="Rule-based teacher-student matching API (Spec v1.0)",
     version="1.1.0",
 )
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ─────────────────────────────────────────────────────────────
 # DB CONFIG
@@ -154,11 +157,10 @@ class MatchResponse(BaseModel):
     flexibility_suggestions: List[str] = Field(default_factory=list)
 
 
-class TrialFeedbackRequest:
+class TrialFeedbackRequest(BaseModel):
     class_id: int
     student_id: int
     teacher_id: int
-    feedback_role: str
     trial_success: Optional[bool] = None
     teacher_match_quality: Optional[int] = Field(default=None, ge=1, le=5)
     student_feedback: Optional[str] = None
@@ -358,8 +360,8 @@ def fetch_teacher_performance_snapshots(conn) -> dict:
 def fetch_all_trial_counts(conn) -> dict:
     _, rows = q(conn, """
         SELECT teacher_id, COUNT(*) AS total_trials
-        FROM analytics.class_facts
-        WHERE event_type = 'trial_started'
+        FROM clean.classes
+        WHERE is_trial = TRUE
         GROUP BY teacher_id
     """)
     return {r[0]: int(r[1] or 0) for r in rows}
@@ -367,51 +369,13 @@ def fetch_all_trial_counts(conn) -> dict:
 
 def fetch_all_retention_rates(conn) -> dict:
     """
-    FIX #3: Per-teacher 90-day retention rate.
-    Retention = students still active (subscription_active event) 90 days after first trial.
-    Returns ratio 0.0–100.0 per teacher_id.
+    Per-teacher retention rate (0–100), sourced from the performance profile
+    when available.
     """
     _, rows = q(conn, """
-        WITH trials AS (
-            SELECT DISTINCT ON (teacher_id, student_id)
-                teacher_id,
-                student_id,
-                occurred_at AS trial_date
-            FROM analytics.class_facts
-            WHERE event_type = 'trial_started'
-        ),
-        retained AS (
-            SELECT t.teacher_id,
-                   COUNT(DISTINCT t.student_id) AS retained_count,
-                   COUNT(DISTINCT t.student_id) AS trial_count
-            FROM trials t
-            WHERE EXISTS (
-                SELECT 1
-                FROM analytics.class_facts cf
-                WHERE cf.teacher_id = t.teacher_id
-                  AND cf.student_id = t.student_id
-                  AND cf.event_type = 'subscription_active'
-                  AND cf.occurred_at BETWEEN t.trial_date
-                                         AND t.trial_date + INTERVAL '90 days'
-            )
-            GROUP BY t.teacher_id
-        ),
-        all_trials AS (
-            SELECT teacher_id, COUNT(DISTINCT student_id) AS total
-            FROM trials
-            GROUP BY teacher_id
-        )
-        SELECT a.teacher_id,
-               ROUND(
-                   COALESCE(
-                       p.student_retention_rate,
-                       COALESCE(r.retained_count, 0)::numeric / NULLIF(a.total, 0) * 100
-                   ),
-                   1
-               )
-        FROM all_trials a
-        LEFT JOIN retained r ON a.teacher_id = r.teacher_id
-        LEFT JOIN serve.teacher_performance_profile p ON p.teacher_id = a.teacher_id
+        SELECT teacher_id,
+               ROUND(COALESCE(student_retention_rate, 0), 1)
+        FROM serve.teacher_performance_profile
     """)
     return {r[0]: float(r[1] or 0) for r in rows}
 
@@ -624,7 +588,7 @@ def compute_score(
 ) -> float:
     """
     Spec weights:
-      30% Student Fit       — preference matching (language, temperament, correction, scaffolding)
+      30% Student Fit       — age, level, tag overlap, and goal alignment
       25% Availability Fit  — trial slots within preferred window
       20% Performance       — conv_rate(40%) + retention(30%) + lesson_quality(30%)
       15% Recurring Compat  — preferred days covered by availability
@@ -1027,33 +991,10 @@ def _empty_response(request, student, student_age, english_level, native_languag
     }
 
 
-def ensure_trial_feedback_table(conn):
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE SCHEMA IF NOT EXISTS analytics;
-        CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
-            feedback_id BIGSERIAL PRIMARY KEY,
-            class_id INT NOT NULL,
-            student_id INT NOT NULL,
-            teacher_id INT NOT NULL,
-            feedback_role TEXT NOT NULL CHECK (feedback_role IN ('student', 'teacher')),
-            trial_success BOOLEAN,
-            teacher_match_quality INT CHECK (teacher_match_quality BETWEEN 1 AND 5),
-            student_feedback TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        )
-    """)
-    conn.commit()
-    cur.close()
-
-
 @app.post("/trial-feedback", response_model=TrialFeedbackResponse)
 async def submit_trial_feedback(request: TrialFeedbackRequest):
-    if request.feedback_role not in ("student", "teacher"):
-        raise HTTPException(status_code=400, detail="feedback_role must be 'student' or 'teacher'")
     conn = get_db()
     try:
-        ensure_trial_feedback_table(conn)
         _, class_rows = q(conn, """
             SELECT 1
             FROM clean.classes
@@ -1086,18 +1027,16 @@ async def submit_trial_feedback(request: TrialFeedbackRequest):
                 class_id,
                 student_id,
                 teacher_id,
-                feedback_role,
                 trial_success,
                 teacher_match_quality,
                 student_feedback
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING feedback_id
         """, (
             request.class_id,
             request.student_id,
             request.teacher_id,
-            request.feedback_role,
             request.trial_success,
             request.teacher_match_quality,
             request.student_feedback,
@@ -1120,6 +1059,16 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/demo")
+async def demo_ui():
+    return FileResponse(os.path.join(BASE_DIR, "demo_ui.html"))
+
+
+@app.get("/matching-engine-explainer")
+async def matching_engine_explainer():
+    return FileResponse(os.path.join(BASE_DIR, "matching_engine_explainer.html"))
+
+
 @app.get("/")
 async def root():
     return {
@@ -1136,6 +1085,8 @@ async def root():
             "POST /match":  "Match teachers to a student",
             "POST /trial-feedback": "Store post-trial feedback",
             "GET /health":  "Health check",
+            "GET /demo":    "CSV-backed demo UI",
+            "GET /matching-engine-explainer": "Architecture explainer page",
             "GET /docs":    "Swagger UI",
             "GET /redoc":   "ReDoc",
         },
