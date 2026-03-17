@@ -8,13 +8,11 @@
 
 ## Executive Summary
 
-Delivered a **production-ready matching engine** that automatically recommends suitable teachers for students in under 1 second.
+Delivered a **production-ready matching engine** that automatically recommends suitable teachers for students, using the live PostgreSQL warehouse (schemas `clean`, `analytics`, `serve`) and the latest FastAPI implementation in `matching_engine.py` + `availability_service.py`.
 
-**Achievement:** Reduces manual teacher search from **10 minutes to under 1 second**.
+**System Type:** Rule-based scoring engine with hard filters, Node.js‑equivalent availability checking, and weighted performance + capacity metrics.
 
-**System Type:** Rule-based scoring engine with hard filters, availability checking, and weighted performance metrics.
-
-**Integration Status:** Standalone API that complements existing backend trial booking system without conflicts.
+**Integration Status:** Standalone API that complements the existing backend booking system without conflicts.
 
 ---
 
@@ -46,12 +44,28 @@ Ranks teachers by match quality using:
 - **Recurring Compatibility (15%)** — Schedule overlap for ongoing lessons
 - **Capacity (10%)** — Free capacity to prevent overload
 
-#### Enterprise Additions Implemented
-- **Student Tags** — request-level and DB-backed student tag matching
-- **Student Goals** — request-level and DB-backed learning-goal matching
-- **Earliest Available Search** — can prioritize earliest bookable option
-- **Flexibility Suggestions** — returns schedule-relaxation suggestions when no match exists
-- **Post-Trial Feedback API** — captures `trial_success`, `teacher_match_quality`, and `student_feedback`
+#### Enterprise Additions Implemented (now live in code)
+- **Student tags & goals** — request-level and DB-backed student tags/goals now flow into scoring (`student_tags`, `student_goals` + `clean.students` preference columns).
+- **Earliest-available search** — optional `search_option = "earliest_available"` resorts the shortlist by the earliest usable slot while respecting score.
+- **Flexibility suggestions** — when no teachers match under current constraints, the API can return human-readable suggestions to relax time or day constraints.
+- **Post-trial feedback API** — `POST /trial-feedback` creates rows in `analytics.trial_class_feedback` so ops can log `trial_success`, `teacher_match_quality` and free-text `student_feedback`.
+- **Retention-aware performance** — a dedicated retention component has been added to the performance score (see FIX #3 below).
+
+#### v1.1.0 Fixes Implemented (matching the spec comments in `matching_engine.py`)
+- **FIX #1 — Subscription mode no longer returns 0 teachers**  
+  Subscription searches now require at least one recurring slot per teacher (built via `AvailabilityService.get_recurring_availability`) instead of reusing trial slots, so valid subscription teachers are surfaced correctly.
+
+- **FIX #2 — Native language hard filter uses `languages_spoken`**  
+  The native-language requirement now checks `clean.teachers.languages_spoken` rather than `teaching_languages`, which aligns with how real teacher data is stored.
+
+- **FIX #3 — Retention rate added to performance score and surfaced in the API**  
+  Per‑teacher 90‑day retention is read from `serve.teacher_performance_profile` or recomputed from `analytics.class_facts`, blended into the performance component and returned as `retention_rate` in each teacher result.
+
+- **FIX #4 — Day-of-week convention unified (0=Sunday) across engine and availability service**  
+  Both `matching_engine.py` and `availability_service.py` share the same canonical mapping: index 0 = Sunday, directly matching `clean.teacher_availability.day_of_week`.
+
+- **FIX #5 — `recurring_slots` present for every teacher result**  
+  Responses now always include a `recurring_slots` array per teacher (empty only when not applicable), making subscription options explicit for consumers of the API.
 
 ### Performance Metrics
 - **Response Time:** Under 1 second (requirement: under 5 seconds) ✅

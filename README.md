@@ -1,8 +1,7 @@
 # Tulkka Matching Engine
 
-Rule-based teacher-student matching API. Takes a student ID + preferred schedule, returns top 3 teachers ranked by match score.
-
-**Now running on FastAPI** with automatic API documentation, type safety, and better performance.
+Rule-based teacher-student matching API running on FastAPI + PostgreSQL.  
+Takes a student ID + preferred schedule and returns a ranked shortlist of teachers with scores and slots.
 
 ## Setup
 
@@ -12,22 +11,26 @@ Rule-based teacher-student matching API. Takes a student ID + preferred schedule
 pip install -r requirements.txt
 ```
 
+You also need a PostgreSQL database with the `clean`, `analytics` and `serve` schemas
+as used in `matching_engine.py` and `availability_service.py`. Connection details
+are read from environment variables (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`).
+
 ## Run the server
 
 ```bash
 python run_server.py
 ```
 
-Server starts at `http://localhost:5000`
+Server starts at `http://localhost:5050`.
 
 **API Documentation:**
-- Swagger UI: `http://localhost:5000/docs`
-- ReDoc: `http://localhost:5000/redoc`
+- Swagger UI: `http://localhost:5050/docs`
+- ReDoc: `http://localhost:5050/redoc`
 
 ## Test it
 
 ```bash
-curl -X POST http://localhost:5000/match \
+curl -X POST http://localhost:5050/match \
   -H "Content-Type: application/json" \
   -d '{"student_id": 930, "preferred_days": ["Sunday","Tuesday"], "preferred_time_from": "16:00", "preferred_time_to": "21:00", "mode": "trial"}'
 ```
@@ -36,45 +39,41 @@ curl -X POST http://localhost:5000/match \
 
 | File | Purpose |
 |------|---------|
-| `matching_engine.py` | Main FastAPI API — all matching logic lives here |
-| `matching_engine.py` | Legacy Flask version (kept for reference) |
-| `run_server.py` | Starts the server (use this, not matching_engine_fastapi.py directly) |
-| `matching_engine_explainer.html` | Full explanation of how the engine works, data sources, scoring |
+| `matching_engine.py` | Main FastAPI app — all matching, scoring and API endpoints (`/match`, `/trial-feedback`, `/health`, `/`) |
+| `availability_service.py` | Availability + conflict logic mirroring the Node.js scheduling behaviour on PostgreSQL data |
+| `run_server.py` | Convenience entrypoint to start the FastAPI app on port 5050 |
+| `matching_engine_explainer.html` | Human-friendly explainer of what the engine does, data sources and scoring (kept in sync with the code) |
+| `MATCHING_ENGINE_REPORT.md` | Narrative implementation report for leadership / stakeholders |
+| `SPEC_COMPLIANCE_AND_QUALITY_ASSESSMENT.md` | Spec compliance + quality assessment for this matching engine implementation |
 | `requirements.txt` | Python dependencies |
 
-## FastAPI Benefits
+## How scoring works (as implemented)
 
-- **Automatic API Documentation**: Interactive Swagger UI at `/docs`
-- **Type Safety**: Pydantic models validate request/response data
-- **Better Performance**: ASGI support with uvicorn
-- **Async Support**: Ready for future async database operations
-- **OpenAPI Standard**: Auto-generated API spec for client generation
+Weights and logic come directly from `compute_score` in `matching_engine.py`:
 
-## How scoring works
+| Factor | Weight | Source in code / DB |
+|--------|--------|---------------------|
+| Student fit (preferences, age, level, tags, goals) | 30% | `compute_student_fit` using `clean.students` preference columns + request-level tags/goals |
+| Availability fit (trial/recurring slots) | 25% | Matching between preferred window and slots from `clean.teacher_availability` + `AvailabilityService` |
+| Performance (conversion + retention + lesson quality) | 20% | Aggregates from `analytics.class_facts` and `serve.teacher_performance_profile` |
+| Recurring compatibility (day coverage) | 15% | How many preferred days have viable recurring slots (`recurring_slots`) |
+| Capacity (free students) | 10% | Active student counts from `clean.classes`, `clean.subscriptions`, `clean.subscription_members` vs `max_students_capacity` |
 
-| Factor | Weight | Source |
-|--------|--------|--------|
-| Student fit (language + level) | 30% | `users` table |
-| Availability overlap | 25% | `teacher_availability` table |
-| Performance (conversion + quality) | 20% | `trial_class_registrations` + `lesson_feedbacks` |
-| Recurring day coverage | 15% | computed from slots |
-| Capacity (free slots) | 10% | `classes` table |
-
-Open `matching_engine_explainer.html` in a browser for the full breakdown.
+Additional small bonuses/penalties are applied for:
+- load balancing (under/over-utilised teachers),
+- teacher priority (`trial_priority`),
+- simple age/level-based personalisation tags.
 
 ## DB access
 
-Connects to the live Tulkka DB (credentials in `.env` file).
-
-> **Note:** The DB has an IP whitelist. If you get a connection refused error, send your public IP to Mahesh and ask him to whitelist it, or ask him to run:
-> ```sql
-> GRANT ALL ON tulkka_live.* TO 'admin'@'%';
-> ```
-> to allow connections from any IP.
+The engine connects directly to PostgreSQL using `psycopg2` with configuration from
+environment variables. See `DB_CONFIG` in `matching_engine.py` for the exact keys.
 
 ## API
 
-**POST /match**
+**POST `/match`**
+
+Request body (minimal example):
 
 ```json
 {
@@ -86,28 +85,41 @@ Connects to the live Tulkka DB (credentials in `.env` file).
 }
 ```
 
-**GET /health** — returns `{"status": "ok"}`
+Optional fields supported by the implementation:
+- `student_age`, `english_level`, `native_language`
+- `requires_native_language_teacher`
+- `target_language` (defaults to `"English"`)
+- `student_tags` (list of strings)
+- `student_goals` (list of strings)
+- `search_option` (e.g. `"earliest_available"`)
+- `allow_flexibility_suggestions` (boolean)
 
-**GET /** — Returns API information and endpoints
+**GET `/health`** — returns `{"status": "ok"}`  
+**GET `/`** — Returns basic API information, version and implemented fixes
+
+**POST `/trial-feedback`** — writes one row into `analytics.trial_class_feedback` with:
+- `class_id`, `student_id`, `teacher_id`,
+- `feedback_role` (`"student"` or `"teacher"`),
+- `trial_success`, `teacher_match_quality`, `student_feedback`.
 
 ## Development
 
 For development with auto-reload:
 
 ```bash
-uvicorn matching_engine_fastapi:app --reload --port 5000
+uvicorn matching_engine:app --reload --port 5050
 ```
 
 ## Production Deployment
 
-For production, use a production ASGI server:
+For production, use a production ASGI server, pointing at the `app` in `matching_engine.py`:
 
 ```bash
-uvicorn matching_engine_fastapi:app --host 0.0.0.0 --port 5000 --workers 4
+uvicorn matching_engine:app --host 0.0.0.0 --port 5050 --workers 4
 ```
 
-Or use gunicorn with uvicorn workers:
+Or with gunicorn:
 
 ```bash
-gunicorn matching_engine_fastapi:app --workers 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:5000
+gunicorn matching_engine:app --workers 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:5050
 ```

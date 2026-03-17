@@ -171,8 +171,7 @@
     <div class="sub">How it works · What data it uses · Where it comes from</div>
     <div class="badge-row">
       <span class="badge badge-green">Rule-Based MVP</span>
-      <span class="badge badge-blue">MySQL Live DB</span>
-      <span class="badge badge-yellow">11s Response Time</span>
+      <span class="badge badge-blue">PostgreSQL (clean · analytics · serve)</span>
     </div>
   </div>
 
@@ -181,9 +180,9 @@
   <!-- SECTION 1: WHAT IT DOES -->
   <div class="sec-title"><span class="sec-num">1</span> What does it do?</div>
   <div class="info-box">
-    Before this: ops team manually searched for a teacher when a new student signed up — took ~10 minutes per student.<br/><br/>
-    Now: call one API with a <strong>student_id</strong> + their preferred schedule → get back <strong>top 3 teachers</strong> ranked by match score in <strong>~11 seconds</strong>.<br/><br/>
-    Each result includes the teacher's <strong>match score</strong>, <strong>trial conversion rate</strong>, <strong>lesson quality score</strong>, and their <strong>available time slots</strong> that match the student's schedule.
+    The matching engine is a standalone FastAPI service on top of the live PostgreSQL warehouse.<br/><br/>
+    You call one API with a <strong>student_id</strong> (or explicit profile) + their preferred schedule → it returns a ranked shortlist of teachers with scores, availability and capacity that can be booked safely.<br/><br/>
+    Each result includes the teacher's <strong>match score</strong>, <strong>trial conversion rate</strong>, <strong>retention rate</strong>, <strong>lesson quality score</strong>, their <strong>trial slots</strong> (for trials), <strong>recurring slots</strong> (for subscriptions), and basic capacity information.
   </div>
 
   <hr class="div"/>
@@ -195,19 +194,23 @@
     <div class="flow-step step-red">
       <div class="step-label">Step 1 — Hard Filter</div>
       <h3>Remove ineligible teachers</h3>
-      <p>Only keep teachers where <code>status = 'active'</code> and <code>language = 'EN'</code> (teaching English). Teachers with HE or AR as teaching language are excluded. This is the gate — if a teacher doesn't pass, they never get scored.</p>
+      <p>Only keep teachers where <code>status = 'active'</code> in <code>clean.teachers</code>, who can teach the requested <code>target_language</code>, and (optionally) satisfy the student's native-language requirement via <code>languages_spoken</code>. If the student requires a native-language teacher and no teacher speaks that native language, they never reach scoring.</p>
     </div>
     <div class="arrow">↓</div>
     <div class="flow-step step-blue">
       <div class="step-label">Step 2 — Availability Check</div>
       <h3>Find teachers with matching slots</h3>
-      <p>Check each teacher's weekly recurring slots (from <code>teacher_availability</code> table — stored as JSON per day). Filter slots that fall within the student's preferred days and time range. Teachers with zero matching slots are dropped.</p>
+      <p>Use normalized availability from <code>clean.teacher_availability</code> (day_of_week, start_time, end_time) plus the <code>AvailabilityService</code> to:<br/>
+         • Expand each day into 30-minute slots with a canonical 0=Sunday mapping shared with the matching engine.<br/>
+         • For <strong>trial</strong> mode, call <code>get_trial_availability()</code> to apply the full 3-layer Node.js logic (configured schedule, teacher holidays, existing classes) and keep only slots inside the student's preferred window.<br/>
+         • For <strong>subscription</strong> mode, call <code>get_recurring_availability()</code> to check a 4‑week pattern for conflicts and build at least one recurring option per preferred day.<br/>
+         Teachers with no viable trial slots (in trial mode) or no recurring slots (in subscription mode) are dropped.</p>
     </div>
     <div class="arrow">↓</div>
     <div class="flow-step step-green">
       <div class="step-label">Step 3 — Scoring</div>
       <h3>Rank remaining teachers by match score</h3>
-      <p>Each teacher gets a weighted score from 5 components (see Section 4). Sort descending. Return top 3.</p>
+      <p>Each teacher gets a weighted score from 5 components (see Section 4). The engine then applies small adjustments for load balancing, teacher priority and age/level-specific personalisation, sorts descending, and returns the top candidates (up to 5 in the current implementation).</p>
     </div>
     <div class="arrow">↓</div>
     <div class="flow-step step-purple">
@@ -223,7 +226,8 @@
   <div class="sec-title"><span class="sec-num">3</span> What data is used — and where it comes from</div>
 
   <div class="ok-box">
-    <strong>Mahesh confirmed:</strong> Only two things are missing from DB — student preferred schedule + student goal at signup. Everything else below is real data pulled from MySQL live DB.
+    All of the following comes from the live PostgreSQL schemas used by the matching engine.  
+    Student preferred schedule is still provided in the request body.
   </div>
 
   <table>
@@ -238,102 +242,95 @@
     </thead>
     <tbody>
       <tr>
-        <td>Teacher teaching language</td>
-        <td><code>users</code></td>
-        <td><code>language</code></td>
-        <td>106 / 129 teachers</td>
+        <td>Teacher teaching languages</td>
+        <td><code>clean.teachers</code></td>
+        <td><code>teaching_languages</code></td>
+        <td>All active teachers</td>
         <td><span class="real">REAL</span></td>
       </tr>
       <tr>
         <td>Teacher active status</td>
-        <td><code>users</code></td>
+        <td><code>clean.teachers</code></td>
         <td><code>status = 'active'</code></td>
-        <td>97 active teachers</td>
+        <td>Filtered in code</td>
         <td><span class="real">REAL</span></td>
       </tr>
       <tr>
         <td>Teacher weekly availability</td>
-        <td><code>teacher_availability</code></td>
-        <td><code>mon, tue, wed, thu, fri, sat, sun</code></td>
-        <td>200 teachers</td>
+        <td><code>clean.teacher_availability</code></td>
+        <td><code>day_of_week, start_time, end_time, is_active</code></td>
+        <td>All active teachers</td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Teacher holidays</td>
+        <td><code>clean.teacher_holidays</code></td>
+        <td><code>holiday_date, start_time</code></td>
+        <td>Used in <code>AvailabilityService</code></td>
+        <td><span class="real">REAL</span></td>
+      </tr>
+      <tr>
+        <td>Existing classes (conflicts)</td>
+        <td><code>clean.classes</code></td>
+        <td><code>meeting_start, meeting_end, lifecycle_status</code></td>
+        <td>Used for both trial and recurring conflict checks</td>
         <td><span class="real">REAL</span></td>
       </tr>
       <tr>
         <td>Trial conversion rate</td>
-        <td><code>trial_class_registrations</code></td>
-        <td><code>status = 'converted'</code> / total</td>
-        <td>10,569 trial records</td>
+        <td><code>analytics.class_facts</code></td>
+        <td><code>event_type IN ('trial_started','trial_converted')</code></td>
+        <td>Aggregated per teacher</td>
         <td><span class="real">REAL (computed)</span></td>
       </tr>
       <tr>
         <td>Lesson quality score</td>
-        <td><code>lesson_feedbacks</code></td>
-        <td><code>grammar_rate, pronunciation_rate, speaking_rate</code></td>
-        <td>101,571 rows</td>
+        <td><code>analytics.class_facts</code></td>
+        <td><code>grammar_score, vocabulary_score, fluency_score</code></td>
+        <td>Aggregated per teacher</td>
         <td><span class="real">REAL (avg)</span></td>
       </tr>
       <tr>
-        <td>Current students per teacher</td>
-        <td><code>classes</code></td>
-        <td><code>teacher_id</code> where status in (pending, started, ended)</td>
-        <td>All classes</td>
-        <td><span class="real">REAL (computed)</span></td>
-      </tr>
-      <tr>
-        <td>Student native language</td>
-        <td><code>users</code></td>
-        <td><code>language</code></td>
-        <td>6,313 / 6,466 students</td>
+        <td>Teacher performance profile</td>
+        <td><code>serve.teacher_performance_profile</code></td>
+        <td><code>avg_rating, verification_rate, total_classes_taught, student_retention_rate</code></td>
+        <td>Joined per teacher</td>
         <td><span class="real">REAL</span></td>
       </tr>
       <tr>
-        <td>Student learning goal</td>
-        <td><code>classes</code></td>
-        <td><code>student_goal</code> (most recent class)</td>
-        <td>27,310 classes have it</td>
-        <td><span class="real">REAL (new students → hardcoded default)</span></td>
+        <td>Current students per teacher</td>
+        <td><code>clean.subscriptions</code>, <code>clean.subscription_members</code>, <code>clean.classes</code></td>
+        <td>active subscriptions + in‑progress / confirmed classes</td>
+        <td>Aggregated per teacher</td>
+        <td><span class="real">REAL (computed)</span></td>
+      </tr>
+      <tr>
+        <td>Student profile + preferences</td>
+        <td><code>clean.students</code></td>
+        <td><code>native_language, cefr_level, student_age, hobbies, language_preference, temperament, corrective_tolerance, scaffolding_preference, learning_goal</code></td>
+        <td>Loaded when <code>student_id</code> is provided</td>
+        <td><span class="real">REAL</span></td>
       </tr>
       <tr>
         <td>Student preferred days</td>
         <td>—</td>
         <td>—</td>
-        <td>Not in DB</td>
-        <td><span class="hard">HARDCODED (from request)</span></td>
+        <td>Not stored</td>
+        <td><span class="hard">FROM REQUEST BODY</span></td>
       </tr>
       <tr>
         <td>Student preferred time</td>
         <td>—</td>
         <td>—</td>
-        <td>Not in DB</td>
-        <td><span class="hard">HARDCODED (from request)</span></td>
+        <td>Not stored</td>
+        <td><span class="hard">FROM REQUEST BODY</span></td>
       </tr>
       <tr>
         <td>Teacher max capacity</td>
-        <td>—</td>
-        <td>—</td>
-        <td>Not in DB</td>
-        <td><span class="hard">HARDCODED = 20 (coming from teacher form)</span></td>
-      </tr>
-      <tr>
-        <td>Teacher tags / teaching style</td>
-        <td>—</td>
-        <td>—</td>
-        <td>Not in DB</td>
-        <td><span class="skip">SKIPPED (coming from teacher form)</span></td>
-      </tr>
-      <tr>
-        <td>Student English level matching</td>
-        <td><code>users</code></td>
-        <td><code>student_level</code></td>
-        <td>1,354 / 6,466 students</td>
-        <td><span class="skip">SKIPPED (data too sparse)</span></td>
-      </tr>
-      <tr>
-        <td>Teacher native language matching</td>
-        <td><code>users</code></td>
-        <td><code>native_language</code></td>
-        <td>0 populated</td>
-        <td><span class="skip">SKIPPED (no data)</span></td>
+        <td><code>clean.teachers</code></td>
+        <td><code>max_students_capacity</code></td>
+        <td>Fallback to 20 if NULL</td>
+        <td><span class="real">REAL / DEFAULTED</span></td>
       </tr>
     </tbody>
   </table>
@@ -354,7 +351,7 @@
         <span class="sc-pct">30%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:30%;background:#3b82f6;"></div></div>
-      <div class="sc-desc">Language match (70%) + level match (30%). Level is neutral (0.5) until data is available. Language fit = 1.0 for all EN teachers.</div>
+      <div class="sc-desc">Multi‑dimension preference fit: temperament, correction style, scaffolding preference, age range, CEFR level, tag overlap and learning goals. Each dimension defaults to 0.5 (neutral) when data is missing and is down‑weighted to 0.3 on clear mismatches.</div>
     </div>
     <div class="score-card">
       <div class="sc-top">
@@ -362,7 +359,7 @@
         <span class="sc-pct">25%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:25%;background:#22c55e;"></div></div>
-      <div class="sc-desc">Number of matching slots ÷ 5. 5+ matching slots = 100%. Fewer slots = lower score.</div>
+      <div class="sc-desc">Based on how many concrete slots fall inside the student's preferred window. 5+ matching slots saturate this component; fewer slots reduce it proportionally.</div>
     </div>
     <div class="score-card">
       <div class="sc-top">
@@ -370,7 +367,7 @@
         <span class="sc-pct">20%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:20%;background:#f59e0b;"></div></div>
-      <div class="sc-desc">Trial conversion rate (60%) + lesson quality score (40%). Both from real DB data. Conversion from <code>trial_class_registrations</code>. Quality from <code>lesson_feedbacks</code>.</div>
+      <div class="sc-desc">Blends three signals from the warehouse: trial conversion rate, 90‑day retention rate and average lesson quality, all normalised to 0–1 and weighted (conversion 40%, retention 30%, quality 30%).</div>
     </div>
     <div class="score-card">
       <div class="sc-top">
@@ -378,7 +375,7 @@
         <span class="sc-pct">15%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:15%;background:#a855f7;"></div></div>
-      <div class="sc-desc">How many of the student's preferred days are covered. 2 days requested + teacher has both = 100%.</div>
+      <div class="sc-desc">How many of the student's preferred days have at least one viable recurring slot. If all requested days have a recurring option, this component is 100%.</div>
     </div>
     <div class="score-card">
       <div class="sc-top">
@@ -386,17 +383,17 @@
         <span class="sc-pct">10%</span>
       </div>
       <div class="score-bar"><div class="score-fill" style="width:10%;background:#ef4444;"></div></div>
-      <div class="sc-desc">Free slots = MAX_CAPACITY (20) − current_students. Teachers near full load get a lower score. Distributes students evenly.</div>
+      <div class="sc-desc">Free capacity is calculated from <code>max_students_capacity</code> and current active students. Teachers near full load are gently down‑weighted, and under‑utilised teachers get a small boost to balance distribution.</div>
     </div>
   </div>
 
   <hr class="div"/>
 
   <!-- SECTION 5: DB QUERIES -->
-  <div class="sec-title"><span class="sec-num">5</span> DB queries — all batched, 5 total per request</div>
+  <div class="sec-title"><span class="sec-num">5</span> DB queries — batched per request</div>
 
   <div class="info-box">
-    Performance optimization: instead of querying per-teacher (97 individual queries), all data is fetched in 5 batch queries before the scoring loop. This brought response time from ~113s to <strong>11s</strong>.
+    The FastAPI endpoint opens a single PostgreSQL connection per request and fetches all required data in batch queries before entering the scoring loop. No per‑teacher round‑trips are made inside the core loop.
   </div>
 
   <table>
@@ -406,33 +403,33 @@
     <tbody>
       <tr>
         <td>1</td>
-        <td><code>SELECT id, full_name, language FROM users WHERE role_name='teacher' AND status='active'</code></td>
-        <td>Hard filter — active EN teachers</td>
-        <td>82 eligible teachers</td>
+        <td><code>SELECT … FROM clean.teachers WHERE status = 'active'</code></td>
+        <td>Teacher profiles, teaching languages, tags, age ranges, capacity, styles</td>
+        <td>List of eligible teachers</td>
       </tr>
       <tr>
         <td>2</td>
-        <td><code>SELECT teacher_id, SUM(status='converted')/COUNT(*) FROM trial_class_registrations GROUP BY teacher_id</code></td>
-        <td>Real conversion rates for all teachers</td>
-        <td>Map: teacher_id → conv%</td>
+        <td><code>SELECT … FROM analytics.class_facts …</code></td>
+        <td>Per‑teacher trial conversion, lesson quality and counts</td>
+        <td>Maps: teacher_id → conv%, quality, trials</td>
       </tr>
       <tr>
         <td>3</td>
-        <td><code>SELECT teacher_id, AVG((grammar+pronunciation+speaking)/3) FROM lesson_feedbacks GROUP BY teacher_id</code></td>
-        <td>Real lesson quality for all teachers</td>
-        <td>Map: teacher_id → quality%</td>
+        <td><code>SELECT … FROM serve.teacher_performance_profile …</code></td>
+        <td>Teacher performance snapshot (ratings, verification, retention)</td>
+        <td>Map: teacher_id → profile</td>
       </tr>
       <tr>
         <td>4</td>
-        <td><code>SELECT teacher_id, COUNT(DISTINCT student_id) FROM classes WHERE status IN (...) GROUP BY teacher_id</code></td>
-        <td>Current student load per teacher</td>
-        <td>Map: teacher_id → count</td>
+        <td><code>SELECT … FROM clean.classes, clean.subscriptions, clean.subscription_members …</code></td>
+        <td>Current student load per teacher (subscription + non‑subscription)</td>
+        <td>Map: teacher_id → active student count</td>
       </tr>
       <tr>
         <td>5</td>
-        <td><code>SELECT user_id, mon,tue,wed,thu,fri,sat,sun FROM teacher_availability WHERE user_id IN (...)</code></td>
-        <td>Weekly availability for all eligible teachers in one shot</td>
-        <td>Map: teacher_id → slots JSON</td>
+        <td><code>SELECT day_of_week, start_time, end_time FROM clean.teacher_availability WHERE teacher_id IN (…)</code></td>
+        <td>Normalized weekly availability for all eligible teachers in one shot</td>
+        <td>Map: teacher_id → per‑day slot maps</td>
       </tr>
     </tbody>
   </table>
@@ -445,7 +442,7 @@
   <div class="api-block">
     <div>
       <span class="api-method">POST</span>
-      <span class="api-url">http://localhost:5000/match</span>
+      <span class="api-url">http://localhost:5050/match</span>
     </div>
     <pre>Request body:
 {
@@ -463,46 +460,47 @@ mode           → "trial" or "subscription"</pre>
   </div>
 
   <!-- SECTION 6b: SAMPLE OUTPUT -->
-  <div class="sec-title"><span class="sec-num">7</span> Sample output — real response from live DB</div>
+  <div class="sec-title"><span class="sec-num">7</span> Sample output — structure of a real response</div>
 
   <div class="output-box"><span class="k">{
   "student_id":</span> <span class="n">930</span><span class="k">,
-  "student_name":</span> <span class="s">"Jade Harrison"</span><span class="k">,
-  "student_native_language":</span> <span class="s">"EN"</span><span class="k">,
-  "student_learning_goal":</span> <span class="s">"improve_conversation"</span><span class="k">,
+  "student_name":</span> <span class="s">"Example Student"</span><span class="k">,
+  "student_native_language":</span> <span class="s">"Hebrew"</span><span class="k">,
   "mode":</span> <span class="s">"trial"</span><span class="k">,
   "preferred_time":</span> <span class="s">"16:00 - 21:00"</span><span class="k">,
+  "sessions_per_week":</span> <span class="n">1</span><span class="k">,
   "teachers_found":</span> <span class="n">3</span><span class="k">,
   "results":</span> <span class="k">[</span>
     <span class="k">{
-      "name":</span> <span class="s">"amit beinish"</span><span class="k">,
-      "match_score":</span> <span class="n">77.5</span><span class="k">,
-      "trial_conversion_rate":</span> <span class="n">0.0</span><span class="k">,
-      "lesson_quality_score":</span> <span class="n">43.3</span><span class="k">,
-      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 16:00"</span><span class="k">,</span> <span class="s">"Sunday 16:30"</span><span class="k">,</span> <span class="s">"Sunday 17:00"</span><span class="k">],
+      "teacher_id":</span> <span class="n">201</span><span class="k">,
+      "name":</span> <span class="s">"Teacher A"</span><span class="k">,
+      "teaching_language":</span> <span class="s">"English"</span><span class="k">,
+      "languages_spoken":</span> <span class="k">[</span><span class="s">"English"</span><span class="k">,</span> <span class="s">"Hebrew"</span><span class="k">],
+      "match_score":</span> <span class="n">81.6</span><span class="k">,
+      "trial_conversion_rate":</span> <span class="n">23.5</span><span class="k">,
+      "retention_rate":</span> <span class="n">67.2</span><span class="k">,
+      "lesson_quality_score":</span> <span class="n">88.3</span><span class="k">,
+      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 16:00"</span><span class="k">,</span> <span class="s">"Sunday 16:30"</span><span class="k">],
+      "recurring_slots":</span> <span class="k">[</span><span class="s">"Sunday 16:00"</span><span class="k">,</span> <span class="s">"Tuesday 18:00"</span><span class="k">],
       "current_students":</span> <span class="n">3</span><span class="k">,
-      "free_capacity":</span> <span class="n">17</span>
-    <span class="k">},
+      "free_capacity":</span> <span class="n">17</span><span class="k">,
+      "teacher_tags":</span> <span class="k">[</span><span class="s">"kids_friendly"</span><span class="k">,</span> <span class="s">"conversation_teacher"</span><span class="k">]
+    },
     {
-      "name":</span> <span class="s">"Teacher Dimple"</span><span class="k">,
-      "match_score":</span> <span class="n">77.2</span><span class="k">,
-      "trial_conversion_rate":</span> <span class="n">5.9</span><span class="k">,
-      "lesson_quality_score":</span> <span class="n">37.5</span><span class="k">,
-      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 17:00"</span><span class="k">,</span> <span class="s">"Sunday 17:30"</span><span class="k">,</span> <span class="s">"Sunday 18:00"</span><span class="k">],
+      "teacher_id":</span> <span class="n">202</span><span class="k">,
+      "name":</span> <span class="s">"Teacher B"</span><span class="k">,
+      "match_score":</span> <span class="n">79.2</span><span class="k">,
+      "trial_conversion_rate":</span> <span class="n">12.1</span><span class="k">,
+      "retention_rate":</span> <span class="n">54.0</span><span class="k">,
+      "lesson_quality_score":</span> <span class="n">91.0</span><span class="k">,
+      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 17:00"</span><span class="k">],
+      "recurring_slots":</span> <span class="k">[</span><span class="s">"Tuesday 18:30"</span><span class="k">],
       "current_students":</span> <span class="n">4</span><span class="k">,
       "free_capacity":</span> <span class="n">16</span>
-    <span class="k">},
-    {
-      "name":</span> <span class="s">"Teacher Abdalla"</span><span class="k">,
-      "match_score":</span> <span class="n">77.2</span><span class="k">,
-      "trial_conversion_rate":</span> <span class="n">14.3</span><span class="k">,
-      "lesson_quality_score":</span> <span class="n">0.0</span><span class="k">,
-      "available_slots":</span> <span class="k">[</span><span class="s">"Sunday 17:30"</span><span class="k">,</span> <span class="s">"Sunday 18:00"</span><span class="k">,</span> <span class="s">"Sunday 18:30"</span><span class="k">],
-      "current_students":</span> <span class="n">0</span><span class="k">,
-      "free_capacity":</span> <span class="n">20</span>
-    <span class="k">}
-  ]
-}</span></div>
+    }
+  ]</span><span class="k">,
+  "flexibility_suggestions":</span> <span class="k">[]</span>
+}</div>
 
   <hr class="div"/>
 
@@ -510,22 +508,22 @@ mode           → "trial" or "subscription"</pre>
   <div class="sec-title"><span class="sec-num">8</span> Assumptions &amp; limitations</div>
 
   <div class="warn-box">
-    <strong>Only 2 things are hardcoded</strong> per Mahesh's confirmation — student preferred schedule and student goal at signup. Everything else is real DB data.
+    <strong>Key point:</strong> student preferred schedule still arrives only via the request body. All other inputs used by the engine come from the PostgreSQL schemas shown above.
   </div>
 
   <ul class="assumption-list">
-    <li data-n="1"><strong>preferred_days / preferred_time</strong> <span class="tag-hard">HARDCODED</span> — passed in request body. Not captured at student signup yet. Mobile team needs to add these questions at onboarding.</li>
-    <li data-n="2"><strong>Student learning goal (new students)</strong> <span class="tag-hard">HARDCODED</span> — defaults to <code>"improve_conversation"</code> for students with no prior classes. For returning students, real goal is fetched from <code>classes.student_goal</code>.</li>
-    <li data-n="3"><strong>MAX_CAPACITY = 20</strong> <span class="tag-hard">HARDCODED</span> — teacher max capacity not in DB. Will be updated once teacher form data is imported.</li>
-    <li data-n="4"><strong>trial_conversion_rate</strong> <span class="tag-real">REAL</span> — computed live from <code>trial_class_registrations</code> (status = 'converted' / total). The <code>users.trial_conversion_rate</code> column was mostly 0 so not used.</li>
-    <li data-n="5"><strong>lesson_quality_score</strong> <span class="tag-real">REAL</span> — average of grammar_rate + pronunciation_rate + speaking_rate from <code>lesson_feedbacks</code> (101,571 rows). Normalized to 0–100.</li>
-    <li data-n="6"><strong>Language hard filter</strong> — teachers with <code>language = 'HE'</code> or <code>'AR'</code> are excluded. Only EN teachers shown (Tulkka is an English learning platform). Teachers with NULL language are included (assumed EN).</li>
-    <li data-n="7"><strong>Teacher tags / teaching style</strong> <span class="tag-skip">SKIPPED</span> — not in DB. Will be added after teacher form responses are imported to DB.</li>
-    <li data-n="8"><strong>Teacher native language matching</strong> <span class="tag-skip">SKIPPED</span> — <code>native_language</code> column exists in users but 0 rows populated. Will enable once teacher form data imported.</li>
-    <li data-n="9"><strong>Student level matching</strong> <span class="tag-skip">SKIPPED</span> — only 1,354 / 6,466 students have <code>student_level</code> populated. Too sparse to use in scoring. Level fit set to 0.5 (neutral) for all.</li>
-    <li data-n="10"><strong>current_students count</strong> — counted from <code>classes</code> with status in (pending, started, ended). May slightly overcount if old ended classes are included. Can add date filter later.</li>
-    <li data-n="11"><strong>One-time availability (trial slots)</strong> <span class="tag-skip">SKIPPED</span> — spec mentions a separate one-time calendar from cancellations. Not implemented. Using recurring calendar for both trial and subscription mode in demo.</li>
-    <li data-n="12"><strong>Returns top 3</strong> — Vinay said "top 2 or top 3 at most". Change <code>results[:3]</code> to <code>results[:5]</code> in <code>matching_engine.py</code> to return up to 5.</li>
+    <li data-n="1"><strong>preferred_days / preferred_time</strong> <span class="tag-hard">REQUEST-ONLY</span> — passed in the request body via FastAPI. Not yet captured at student signup; mobile/web clients must continue sending this explicitly.</li>
+    <li data-n="2"><strong>Student learning goal</strong> <span class="tag-real">REAL</span> — taken from <code>clean.students.learning_goal</code> when present. If empty, the engine simply treats goals as an empty list (neutral for scoring).</li>
+    <li data-n="3"><strong>MAX_CAPACITY fallback</strong> <span class="tag-hard">DEFAULT</span> — if <code>clean.teachers.max_students_capacity</code> is NULL, the code uses a constant of 20 as a safe default.</li>
+    <li data-n="4"><strong>trial_conversion_rate</strong> <span class="tag-real">REAL</span> — computed from <code>analytics.class_facts</code> events (<code>trial_started</code> vs <code>trial_converted</code>) with a hard cap at 100%.</li>
+    <li data-n="5"><strong>lesson_quality_score</strong> <span class="tag-real">REAL</span> — average of grammar/vocabulary/fluency scores in <code>analytics.class_facts</code>, normalised to 0–100.</li>
+    <li data-n="6"><strong>Retention</strong> <span class="tag-real">REAL</span> — where available, comes from <code>serve.teacher_performance_profile.student_retention_rate</code>; otherwise recomputed from trial/subscription events over a 90‑day window.</li>
+    <li data-n="7"><strong>Teacher styles &amp; tags</strong> <span class="tag-real">REAL</span> — <code>teaching_style</code>, <code>correction_style</code>, <code>scaffolding_style</code> and <code>teacher_tags</code> are stored in <code>clean.teachers</code> and used for preference fit and personalisation adjustments.</li>
+    <li data-n="8"><strong>Teacher native language matching</strong> <span class="tag-real">REAL</span> — implemented via <code>clean.teachers.languages_spoken</code> when <code>requires_native_language_teacher = true</code>. If the student's native language is not present in that list, the teacher is filtered out.</li>
+    <li data-n="9"><strong>Student level matching</strong> — uses <code>clean.students.cefr_level</code> when present; otherwise that dimension falls back to neutral (0.5) in <code>compute_student_fit</code>.</li>
+    <li data-n="10"><strong>current_students count</strong> <span class="tag-real">REAL</span> — calculated from subscription + non‑subscription classes as implemented in <code>fetch_all_student_counts</code>. It may slightly over‑ or under‑count in unusual edge cases but is consistent across all teachers.</li>
+    <li data-n="11"><strong>One-time vs recurring availability</strong> — one‑time trial slots use the full 3‑layer availability logic; recurring slots are built off <code>clean.teacher_availability</code> + conflict checks only, as in the original Node.js implementation.</li>
+    <li data-n="12"><strong>Returned shortlist size</strong> — the FastAPI endpoint currently returns up to 5 teachers per call (<code>results[:5]</code>), sorted primarily by match score and retention, with tiebreakers on slots and capacity.</li>
   </ul>
 
   <hr class="div"/>
