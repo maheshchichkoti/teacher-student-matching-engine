@@ -231,16 +231,13 @@ def get_next_date(day_name: str) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def fetch_student(conn, student_id: int):
-    """Fetch student row with all matching-engine fields."""
+    """Fetch student row with matching-engine fields."""
     goal_expr = "learning_goal::text" if table_has_column(conn, "clean", "students", "learning_goal") else "NULL::text"
-    tags_expr = "hobbies" if table_has_column(conn, "clean", "students", "hobbies") else "NULL::jsonb"
     _, rows = q(conn, f"""
         SELECT student_id, full_name, native_language, cefr_level, student_age,
                target_language, requires_native_language_teacher, preferred_days,
                preferred_time_start, preferred_time_end, sessions_per_week,
-               language_preference, temperament, corrective_tolerance, scaffolding_preference,
-               {goal_expr} AS learning_goal,
-               {tags_expr} AS student_tags
+               {goal_expr} AS learning_goal
         FROM clean.students
         WHERE student_id = %s
     """, (student_id,))
@@ -260,25 +257,17 @@ def fetch_student(conn, student_id: int):
         "preferred_time_start":             r[8],
         "preferred_time_end":               r[9],
         "sessions_per_week":                r[10],
-        "language_preference":              r[11],
-        "temperament":                      r[12],
-        "corrective_tolerance":             r[13],
-        "scaffolding_preference":           r[14],
-        "student_goals":                    [r[15]] if r[15] else [],
-        "student_tags":                     _as_str_list(r[16]),
+        "student_goals":                    [r[11]] if r[11] else [],
+        "student_tags":                     [],
     }
 
 
 def fetch_all_teachers(conn):
     """
     Fetch all active teachers with matching-engine fields.
-    FIX #2: `languages_spoken` added as column 10 for native language hard filter.
-    NOTE: recurring_enabled removed - all teachers are full-time
-    NOTE: language_support removed - redundant with languages_spoken
-    Returns list of 13-tuples:
+    Returns list of tuples:
       (teacher_id, full_name, teaching_languages, trial_enabled,
-       age_min, age_max, teacher_tags, max_students_capacity, trial_priority, languages_spoken,
-       teaching_style, correction_style, scaffolding_style)
+       age_min, age_max, teacher_tags, max_students_capacity, trial_priority, languages_spoken)
     """
     _, rows = q(conn, """
         SELECT t.teacher_id,
@@ -290,10 +279,7 @@ def fetch_all_teachers(conn):
                t.teacher_tags,
                t.max_students_capacity,
                t.trial_priority,
-               t.languages_spoken,
-               t.teaching_style,
-               t.correction_style,
-               t.scaffolding_style
+               t.languages_spoken
         FROM clean.teachers t
         WHERE t.status = 'active'
         ORDER BY t.teacher_id
@@ -315,20 +301,21 @@ def _as_str_list(value) -> list[str]:
 def fetch_all_conversion_rates(conn) -> dict:
     """Per-teacher trial conversion rate (0–100)."""
     _, rows = q(conn, """
-        SELECT teacher_id,
+        SELECT c.teacher_id,
                ROUND(
                    LEAST(
                        (
-                           SUM(CASE WHEN event_type = 'trial_converted' THEN 1 ELSE 0 END)::numeric
-                           / NULLIF(SUM(CASE WHEN event_type = 'trial_started' THEN 1 ELSE 0 END), 0)
+                           COUNT(CASE WHEN l.funnel_stage = 'converted' THEN 1 END)::numeric
+                           / NULLIF(COUNT(CASE WHEN l.funnel_stage IN ('demo_done', 'converted') THEN 1 END), 0)
                        ) * 100,
                        100
                    ),
                    1
                ) AS conversion_rate
-        FROM analytics.class_facts
-        WHERE event_type IN ('trial_started', 'trial_converted')
-        GROUP BY teacher_id
+        FROM clean.classes c
+        INNER JOIN analytics.leads l ON c.student_id = l.converted_student_id
+        WHERE c.is_trial = TRUE
+        GROUP BY c.teacher_id
     """)
     return {r[0]: float(r[1] or 0) for r in rows}
 
@@ -566,32 +553,16 @@ def _build_flexibility_suggestions(results: list[dict], preferred_days: list[str
     return suggestions
 
 
-def _pref_match(student_val, teacher_val, match_map=None) -> float:
-    """
-    Compare one student preference against a teacher value.
-    Returns:
-      1.0 — match
-      0.3 — mismatch
-      0.5 — neutral (data not yet collected)
-    """
-    if not student_val or not teacher_val:
-        return 0.5
-    if match_map:
-        return 1.0 if match_map.get(student_val) == teacher_val else 0.3
-    return 1.0 if student_val == teacher_val else 0.3
-
-
 def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
     """
-    Student Fit (30%): matches 4 preference dimensions.
-    Defaults to 0.5 per dimension when data is absent.
+    Student Fit (30%): age/level/tag/goal alignment using tag-based logic only.
     """
-    # NOTE: language_support removed - using languages_spoken for native language matching instead
     teacher_tags = set(teacher_profile.get("teacher_tags") or [])
     student_tags = {str(tag).lower() for tag in (student_prefs.get("student_tags") or [])}
     student_goals = {str(goal).lower() for goal in (student_prefs.get("student_goals") or [])}
     age = student_prefs.get("student_age")
     english_level = (student_prefs.get("english_level") or "").upper()
+
     age_fit = 0.5
     if age is not None:
         if age <= 12 and "kids_friendly" in teacher_tags:
@@ -600,6 +571,7 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
             age_fit = 1.0
         elif age <= 14 and "kids_friendly" not in teacher_tags and "business_english" in teacher_tags:
             age_fit = 0.3
+
     level_fit = 0.5
     if english_level:
         if english_level in {"A1", "A2"} and "beginner_friendly" in teacher_tags:
@@ -608,11 +580,13 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
             level_fit = 1.0
         elif english_level in {"A1", "A2"} and "exam_prep" in teacher_tags:
             level_fit = 0.3
+
     tag_fit = 0.5
     if student_tags:
         teacher_tags_lower = {tag.lower() for tag in teacher_tags}
         overlap = len(student_tags & teacher_tags_lower)
         tag_fit = min(overlap / max(len(student_tags), 1), 1.0) if overlap else 0.3
+
     goal_fit = 0.5
     if student_goals:
         teacher_tags_lower = {tag.lower() for tag in teacher_tags}
@@ -630,21 +604,8 @@ def compute_student_fit(student_prefs: dict, teacher_profile: dict) -> float:
                     matched += 1
                     break
         goal_fit = min(matched / max(len(student_goals), 1), 1.0) if matched else 0.3
-    scores = [
-        0.5,  # Placeholder for language preference match (handled by hard filter)
-        _pref_match(
-            student_prefs.get("temperament"),
-            teacher_profile.get("teaching_style"),
-            match_map={"energetic": "perky", "calm": "business_like"},
-        ),
-        _pref_match(student_prefs.get("corrective_tolerance"), teacher_profile.get("correction_style")),
-        _pref_match(student_prefs.get("scaffolding_preference"), teacher_profile.get("scaffolding_style")),
-        age_fit,
-        level_fit,
-        tag_fit,
-        goal_fit,
-    ]
-    return sum(scores) / len(scores)
+
+    return (age_fit + level_fit + tag_fit + goal_fit) / 4.0
 
 
 def compute_score(
@@ -810,10 +771,6 @@ async def match(request: MatchRequest):
         student_goals = request.student_goals or (student.get("student_goals") if student else []) or []
 
         student_prefs = {
-            "language_preference": student.get("language_preference") if student else None,
-            "temperament": student.get("temperament") if student else None,
-            "corrective_tolerance": student.get("corrective_tolerance") if student else None,
-            "scaffolding_preference": student.get("scaffolding_preference") if student else None,
             "student_age": student_age,
             "english_level": english_level,
             "student_tags": student_tags,
@@ -826,17 +783,15 @@ async def match(request: MatchRequest):
 
         for row in all_teachers:
             (tid, name, teaching_langs, trial_enabled,
-             age_min, age_max, tags, capacity, priority, languages_spoken,
-             teaching_style, correction_style, scaffolding_style) = row
+             age_min, age_max, tags, capacity, priority, languages_spoken) = row
 
             teaching_langs_list   = _as_str_list(teaching_langs)
             languages_spoken_list = _as_str_list(languages_spoken)
             tags_list             = _as_str_list(tags)
 
             # Mode filter
-            if request.mode == "trial"        and not trial_enabled:
+            if request.mode == "trial" and not trial_enabled:
                 continue
-            # NOTE: recurring_enabled removed - all teachers are full-time, always available for subscription
 
             # Disabled teacher
             if priority == "disabled":
@@ -944,19 +899,14 @@ async def match(request: MatchRequest):
             current_stud   = stud_map.get(tid, 0)
             max_cap        = capacity or MAX_CAPACITY
 
-            # FIX #3: retention_rate now passed into compute_score
-            # Build teacher profile with style fields (FIX #1 - using unpacked values)
             teacher_profile = {
                 "max_students": max_cap,
-                "teaching_style": teaching_style,
-                "correction_style": correction_style,
-                "scaffolding_style": scaffolding_style,
                 "teacher_tags": tags_list,
             }
 
             score = compute_score(
-                student_prefs  = student_prefs,  # FIX #1: Use actual preferences
-                teacher_profile= teacher_profile,  # FIX #1: Use teacher profile
+                student_prefs  = student_prefs,
+                teacher_profile= teacher_profile,
                 slots          = score_slots,
                 conv_rate      = conv_rate,
                 retention_rate = retention_rate,
