@@ -1,0 +1,8 @@
+lead_id,phone,email,name,source,converted_student_id,funnel_stage,first_contact_at,converted_at,created_at
+1,853546859,newuser@tulkka.com,New User,agent_manual,1174,converted,2023-06-21 07:07:18+05:30,2023-06-21 07:07:18+05:30,2023-06-21 06:30:29+05:30
+2,6358748158,perry6359@yopmail.com,Aidan Moody,agent_manual,,new,2023-06-21 09:33:38+05:30,,2023-06-21 08:46:09+05:30
+3,8585858558,aidan635@yopmail.com,Aidan Clark,agent_manual,,converted,2023-06-21 09:26:12+05:30,,2023-06-21 08:53:29+05:30
+4,8585858585,aidan6359@yopmail.com,Aidan Clark,agent_manual,,new,2023-06-21 09:30:39+05:30,,2023-06-21 09:00:16+05:30
+5,7428730894,connor6359@yopmail.com,Connor Liam,agent_manual,,converted,2023-06-21 09:14:17+05:30,,2023-06-21 09:11:13+05:30
+6,8585858558,aidan635@yopmail.com,Aidan Moody,agent_manual,,new,2023-06-21 09:26:52+05:30,,2023-06-21 09:26:52+05:30
+7,1234568789,law6359@yopmail.com,Trafalgar Law,agent_manual,,new,2023-06-27 09:47:47+05:30,,2023-06-27 09:47:47+05:30

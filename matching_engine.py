@@ -215,6 +215,13 @@ def table_has_column(conn, schema: str, table: str, column: str) -> bool:
     return bool(rows)
 
 
+def get_trial_filter_sql(conn, alias: str = "c") -> str:
+    qualifier = f"{alias}." if alias else ""
+    if table_has_column(conn, "clean", "classes", "is_trial"):
+        return f"COALESCE(LOWER(({qualifier}is_trial)::text), '0') IN ('1', 't', 'true')"
+    return f"{qualifier}subscription_id IS NULL"
+
+
 def get_next_date(day_name: str) -> str:
     """Return the next calendar date (YYYY-MM-DD) for a given day name."""
     target = DAY_MAP.get(day_name.lower(), "sun")
@@ -302,7 +309,8 @@ def _as_str_list(value) -> list[str]:
 
 def fetch_all_conversion_rates(conn) -> dict:
     """Per-teacher trial conversion rate (0–100)."""
-    _, rows = q(conn, """
+    trial_filter = get_trial_filter_sql(conn, "c")
+    _, rows = q(conn, f"""
         SELECT c.teacher_id,
                ROUND(
                    LEAST(
@@ -316,7 +324,7 @@ def fetch_all_conversion_rates(conn) -> dict:
                ) AS conversion_rate
         FROM clean.classes c
         INNER JOIN analytics.leads l ON c.student_id = l.converted_student_id
-        WHERE c.is_trial = TRUE
+        WHERE {trial_filter}
         GROUP BY c.teacher_id
     """)
     return {r[0]: float(r[1] or 0) for r in rows}
@@ -358,10 +366,11 @@ def fetch_teacher_performance_snapshots(conn) -> dict:
 
 
 def fetch_all_trial_counts(conn) -> dict:
-    _, rows = q(conn, """
+    trial_filter = get_trial_filter_sql(conn, "")
+    _, rows = q(conn, f"""
         SELECT teacher_id, COUNT(*) AS total_trials
         FROM clean.classes
-        WHERE is_trial = TRUE
+        WHERE {trial_filter}
         GROUP BY teacher_id
     """)
     return {r[0]: int(r[1] or 0) for r in rows}

@@ -268,6 +268,26 @@ class AvailabilityService:
 
         return result[0] if result else 0
 
+    def _get_trial_filter_sql(self, alias: str = 'c') -> str:
+        qualifier = f"{alias}." if alias else ""
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND column_name = %s
+            LIMIT 1
+            """,
+            ('clean', 'classes', 'is_trial')
+        )
+        has_is_trial = cur.fetchone() is not None
+        cur.close()
+        if has_is_trial:
+            return f"COALESCE(LOWER(({qualifier}is_trial)::text), '0') IN ('1', 't', 'true')"
+        return f"{qualifier}subscription_id IS NULL"
+
     def get_trial_conversion_rate(
         self,
         teacher_id: int,
@@ -287,12 +307,13 @@ class AvailabilityService:
         # Get trial classes in period
         end_date = datetime.now(pytz.UTC)
         start_date = end_date - timedelta(days=period_days)
+        trial_filter = self._get_trial_filter_sql('c')
 
-        query = """
+        query = f"""
             SELECT COUNT(*) AS count
             FROM clean.classes c
             WHERE c.teacher_id = %s
-              AND c.is_trial = TRUE
+              AND {trial_filter}
               AND c.meeting_start BETWEEN %s AND %s
         """
 
@@ -310,13 +331,13 @@ class AvailabilityService:
             }
 
         # Get conversions using funnel stage
-        query = """
+        query = f"""
             SELECT COUNT(DISTINCT c.student_id) AS count
             FROM clean.classes c
             INNER JOIN analytics.leads l
               ON l.converted_student_id = c.student_id
             WHERE c.teacher_id = %s
-              AND c.is_trial = TRUE
+              AND {trial_filter}
               AND c.meeting_start BETWEEN %s AND %s
               AND l.funnel_stage = 'converted'
         """

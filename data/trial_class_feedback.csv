@@ -1,0 +1,4 @@
+feedback_id,class_id,student_id,teacher_id,feedback_role,trial_success,teacher_match_quality,student_feedback,created_at
+2,286624,8484,8684,student,True,5,Enterprise verification success-path test,2026-03-14 22:34:27.313636+05:30
+3,286624,8484,8684,student,True,5,Enterprise verification success-path test,2026-03-14 22:38:42.296691+05:30
+4,286624,8484,8684,student,True,5,"Great trial, ready to continue",2026-03-16 00:48:01.324443+05:30

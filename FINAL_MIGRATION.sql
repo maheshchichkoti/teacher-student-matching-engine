@@ -46,7 +46,14 @@ ADD CONSTRAINT chk_trial_priority
 CHECK (trial_priority IN ('high', 'normal', 'low', 'disabled'));
 
 -- =============================================================================
--- STEP 3: Post-Trial Feedback
+-- STEP 3: Class Table — Trial Flag Alignment
+-- =============================================================================
+
+ALTER TABLE clean.classes
+ADD COLUMN IF NOT EXISTS is_trial BOOLEAN;
+
+-- =============================================================================
+-- STEP 4: Post-Trial Feedback
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
@@ -65,7 +72,7 @@ CREATE TABLE IF NOT EXISTS analytics.trial_class_feedback (
 );
 
 -- =============================================================================
--- STEP 4: Performance Indexes
+-- STEP 5: Performance Indexes
 -- =============================================================================
 
 -- Student indexes
@@ -82,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_teachers_priority ON clean.teachers(trial_priorit
 CREATE INDEX IF NOT EXISTS idx_teachers_teaching_lang ON clean.teachers USING GIN(teaching_languages);
 CREATE INDEX IF NOT EXISTS idx_teachers_tags ON clean.teachers USING GIN(teacher_tags);
 CREATE INDEX IF NOT EXISTS idx_teachers_languages_spoken ON clean.teachers USING GIN(languages_spoken);
+CREATE INDEX IF NOT EXISTS idx_classes_is_trial ON clean.classes(is_trial);
 
 -- Analytics indexes
 CREATE INDEX IF NOT EXISTS idx_trial_feedback_student ON analytics.trial_class_feedback(student_id);
@@ -89,7 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_trial_feedback_teacher ON analytics.trial_class_f
 CREATE INDEX IF NOT EXISTS idx_trial_feedback_success ON analytics.trial_class_feedback(trial_success);
 
 -- =============================================================================
--- STEP 5: Column Comments (Documentation)
+-- STEP 6: Column Comments (Documentation)
 -- =============================================================================
 
 COMMENT ON COLUMN clean.students.student_age IS 'Student age for age-range matching with teachers';
@@ -109,6 +117,7 @@ COMMENT ON COLUMN clean.teachers.teacher_tags IS 'Teaching style tags as JSON ar
 COMMENT ON COLUMN clean.teachers.languages_spoken IS 'All languages teacher speaks as JSON array (for native language matching)';
 COMMENT ON COLUMN clean.teachers.max_students_capacity IS 'Maximum number of students this teacher can handle';
 COMMENT ON COLUMN clean.teachers.trial_priority IS 'Trial lesson distribution priority: high | normal | low | disabled';
+COMMENT ON COLUMN clean.classes.is_trial IS 'Authoritative trial-class flag migrated from legacy MySQL classes.is_trial';
 
 COMMENT ON TABLE analytics.trial_class_feedback IS 'Post-trial feedback for matching engine quality improvement and AI training data';
 
