@@ -21,10 +21,7 @@ class AvailabilityService:
         self.conn = conn
 
     def get_trial_availability(
-        self,
-        teacher_id: int,
-        date: str,
-        student_timezone: str = 'Asia/Jerusalem'
+        self, teacher_id: int, date: str, student_timezone: str = "Asia/Jerusalem"
     ) -> List[Dict[str, Any]]:
         """
         Get one-time availability for trial lessons.
@@ -39,7 +36,7 @@ class AvailabilityService:
         """
         # Parse date in UTC
         try:
-            utc_date = datetime.strptime(date, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+            utc_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
         except ValueError:
             return []
 
@@ -62,55 +59,65 @@ class AvailabilityService:
 
         # Generate 25-minute slots on 5-minute grid (trial lesson duration)
         time_slots = []
-        day_of_week = utc_date.strftime('%a').lower()
+        day_of_week = utc_date.strftime("%a").lower()
 
         for hour in range(24):
             for minute in range(0, 60, 5):  # 5-minute grid
-                slot_start = utc_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                slot_end = slot_start + timedelta(minutes=25)  # Trial lesson is 25 minutes
+                slot_start = utc_date.replace(
+                    hour=hour, minute=minute, second=0, microsecond=0
+                )
+                slot_end = slot_start + timedelta(
+                    minutes=25
+                )  # Trial lesson is 25 minutes
 
                 # Skip if slot end doesn't align to 5-minute grid
                 if slot_end.minute % 5 != 0:
                     continue
 
-                time_key = slot_start.strftime('%H:%M')
+                time_key = slot_start.strftime("%H:%M")
 
                 slot_info = {
-                    'start': slot_start.astimezone(student_tz).isoformat(),
-                    'end': slot_end.astimezone(student_tz).isoformat(),
-                    'is_available': False,
-                    'message': ''
+                    "start": slot_start.astimezone(student_tz).isoformat(),
+                    "end": slot_end.astimezone(student_tz).isoformat(),
+                    "is_available": False,
+                    "message": "",
                 }
 
                 # Layer 1: Check teacher's configured schedule
-                if not teacher.get('availability') or not teacher['availability'].get(day_of_week):
-                    slot_info['message'] = "Teacher is not available on this day"
+                if not teacher.get("availability") or not teacher["availability"].get(
+                    day_of_week
+                ):
+                    slot_info["message"] = "Teacher is not available on this day"
                     time_slots.append(slot_info)
                     continue
 
-                day_schedule = teacher['availability'][day_of_week]
+                day_schedule = teacher["availability"][day_of_week]
                 if not day_schedule.get(time_key):
-                    slot_info['message'] = f"Teacher is unavailable at {time_key}"
+                    slot_info["message"] = f"Teacher is unavailable at {time_key}"
                     time_slots.append(slot_info)
                     continue
 
                 # Layer 2: Check if teacher is on holiday
                 holiday = self._check_holiday_conflict(slot_start, slot_end, holidays)
                 if holiday:
-                    slot_info['message'] = "Teacher is on holiday"
+                    slot_info["message"] = "Teacher is on holiday"
                     time_slots.append(slot_info)
                     continue
 
                 # Layer 3: Check for class conflicts
-                conflicting_class = self._check_class_conflict(slot_start, slot_end, existing_classes)
+                conflicting_class = self._check_class_conflict(
+                    slot_start, slot_end, existing_classes
+                )
                 if conflicting_class:
-                    slot_info['message'] = f"Teacher has a class with {conflicting_class.get('student_name', 'a student')}"
+                    slot_info["message"] = (
+                        f"Teacher has a class with {conflicting_class.get('student_name', 'a student')}"
+                    )
                     time_slots.append(slot_info)
                     continue
 
                 # Slot is available
-                slot_info['is_available'] = True
-                slot_info['message'] = ""
+                slot_info["is_available"] = True
+                slot_info["message"] = ""
                 time_slots.append(slot_info)
 
         return time_slots
@@ -120,69 +127,96 @@ class AvailabilityService:
         teacher_id: int,
         day: str,
         time: str,
-        weeks: int = 4
+        weeks: int = 4,
+        lesson_duration_minutes: int = 60,
     ) -> List[Dict[str, Any]]:
         """
         Get recurring availability for subscriptions.
         Replicates checkClassAvailability() from monthly-class.controller.js
 
-        Checks 4-week pattern for availability:
-        - Does NOT check teacher's configured schedule (allows bookings regardless)
+        Checks 4-week pattern for availability (Spec-aligned):
+        - Verifies the teacher has recurring availability for the requested day+time
+          using `clean.teacher_availability` (via `_get_teacher_with_availability`).
         - Checks holiday conflicts
         - Checks existing class conflicts
         """
-        # Get teacher info
-        teacher = self._get_teacher(teacher_id)
+        teacher = self._get_teacher_with_availability(teacher_id)
         if not teacher:
             return []
 
         # Get teacher holidays
         holidays = self._get_teacher_holidays(teacher_id)
 
-        # Calculate next N occurrences
-        occurrences = self._get_next_occurrences(day, time, weeks)
+        # Schedule check (recurring calendar)
+        day_key = self._normalize_day_key(day)
+        if not day_key:
+            return []
+        if not teacher.get("availability") or not teacher["availability"].get(day_key):
+            return []
+
+        # Teacher availability is stored as 30-minute blocks.
+        # For a lesson duration > 30, ensure all consecutive 30-minute blocks are available.
+        required_slots = max(
+            1, (int(lesson_duration_minutes) + 29) // 30
+        )  # ceil(duration/30)
+        try:
+            start_h, start_m = map(int, time.split(":", 1))
+            start_minutes = start_h * 60 + start_m
+        except Exception:
+            return []
+
+        for i in range(required_slots):
+            slot_minutes = start_minutes + (i * 30)
+            if slot_minutes >= 24 * 60:
+                return []
+            hh, mm = divmod(slot_minutes, 60)
+            time_key_i = f"{hh:02d}:{mm:02d}"
+            if not teacher["availability"][day_key].get(time_key_i):
+                return []
+
+        # Calculate next N occurrences (UTC)
+        occurrences = self._get_next_occurrences(day_key, time, weeks)
 
         results = []
-        class_duration = 30  # Default 30 minutes
 
         for occurrence in occurrences:
             start_time = occurrence
-            end_time = occurrence + timedelta(minutes=class_duration)
-            date_str = start_time.strftime('%Y-%m-%d')
-            day_name = start_time.strftime('%A')
+            end_time = occurrence + timedelta(minutes=int(lesson_duration_minutes))
+            date_str = start_time.strftime("%Y-%m-%d")
+            day_name = start_time.strftime("%A")
 
             availability_info = {
-                'day': day_name,
-                'time': time,
-                'date': date_str,
-                'iso_datetime': start_time.isoformat(),
-                'end_datetime': end_time.isoformat(),
-                'available': True,
-                'unavailability_reason': None
+                "day": day_name,
+                "time": time,
+                "date": date_str,
+                "iso_datetime": start_time.isoformat(),
+                "end_datetime": end_time.isoformat(),
+                "available": True,
+                "unavailability_reason": None,
             }
 
             # Check for holiday conflicts
             is_holiday = self._check_holiday_conflict(start_time, end_time, holidays)
             if is_holiday:
-                availability_info['available'] = False
-                availability_info['unavailability_reason'] = 'Teacher on holiday'
+                availability_info["available"] = False
+                availability_info["unavailability_reason"] = "Teacher on holiday"
 
             # Check for existing class conflicts
             conflicting_class = self._check_class_conflict_db(
                 teacher_id, start_time, end_time
             )
             if conflicting_class:
-                availability_info['available'] = False
-                availability_info['unavailability_reason'] = 'Teacher has another class scheduled'
+                availability_info["available"] = False
+                availability_info["unavailability_reason"] = (
+                    "Teacher has another class scheduled"
+                )
 
             results.append(availability_info)
 
         return results
 
     def calculate_teacher_occupancy(
-        self,
-        teacher_id: int,
-        occupancy_threshold: float = 85.0
+        self, teacher_id: int, occupancy_threshold: float = 85.0
     ) -> Dict[str, Any]:
         """
         Calculate teacher occupancy rate.
@@ -199,10 +233,15 @@ class AvailabilityService:
         # Get teacher's availability
         teacher = self._get_teacher_with_availability(teacher_id)
         if not teacher:
-            return {'total_slots': 0, 'booked_slots': 0, 'occupancy_rate': 0.0, 'below_threshold': False}
+            return {
+                "total_slots": 0,
+                "booked_slots": 0,
+                "occupancy_rate": 0.0,
+                "below_threshold": False,
+            }
 
         # Calculate total available slots (30-minute blocks)
-        total_slots = self._calculate_total_slots(teacher['availability'])
+        total_slots = self._calculate_total_slots(teacher["availability"])
 
         # Calculate booked slots from regular classes
         booked_slots = self._calculate_booked_slots(teacher_id)
@@ -211,10 +250,10 @@ class AvailabilityService:
         occupancy_rate = (booked_slots / total_slots * 100) if total_slots > 0 else 0.0
 
         return {
-            'total_slots': total_slots,
-            'booked_slots': booked_slots,
-            'occupancy_rate': round(occupancy_rate, 2),
-            'below_threshold': occupancy_rate <= occupancy_threshold
+            "total_slots": total_slots,
+            "booked_slots": booked_slots,
+            "occupancy_rate": round(occupancy_rate, 2),
+            "below_threshold": occupancy_rate <= occupancy_threshold,
         }
 
     def get_active_student_count(self, teacher_id: int) -> int:
@@ -268,7 +307,7 @@ class AvailabilityService:
 
         return result[0] if result else 0
 
-    def _get_trial_filter_sql(self, alias: str = 'c') -> str:
+    def _get_trial_filter_sql(self, alias: str = "c") -> str:
         qualifier = f"{alias}." if alias else ""
         cur = self.conn.cursor()
         cur.execute(
@@ -280,7 +319,7 @@ class AvailabilityService:
               AND column_name = %s
             LIMIT 1
             """,
-            ('clean', 'classes', 'is_trial')
+            ("clean", "classes", "is_trial"),
         )
         has_is_trial = cur.fetchone() is not None
         cur.close()
@@ -289,9 +328,7 @@ class AvailabilityService:
         return f"{qualifier}subscription_id IS NULL"
 
     def get_trial_conversion_rate(
-        self,
-        teacher_id: int,
-        period_days: int = 30
+        self, teacher_id: int, period_days: int = 30
     ) -> Dict[str, Any]:
         """
         Calculate trial conversion rate for a teacher using analytics schema.
@@ -307,7 +344,7 @@ class AvailabilityService:
         # Get trial classes in period
         end_date = datetime.now(pytz.UTC)
         start_date = end_date - timedelta(days=period_days)
-        trial_filter = self._get_trial_filter_sql('c')
+        trial_filter = self._get_trial_filter_sql("c")
 
         query = f"""
             SELECT COUNT(*) AS count
@@ -324,11 +361,7 @@ class AvailabilityService:
         cur.close()
 
         if total_trials == 0:
-            return {
-                'total_trials': 0,
-                'conversions': 0,
-                'conversion_rate': 0.0
-            }
+            return {"total_trials": 0, "conversions": 0, "conversion_rate": 0.0}
 
         # Get conversions using funnel stage
         query = f"""
@@ -348,12 +381,14 @@ class AvailabilityService:
         conversions = result[0] if result else 0
         cur.close()
 
-        conversion_rate = (conversions / total_trials * 100) if total_trials > 0 else 0.0
+        conversion_rate = (
+            (conversions / total_trials * 100) if total_trials > 0 else 0.0
+        )
 
         return {
-            'total_trials': total_trials,
-            'conversions': conversions,
-            'conversion_rate': round(conversion_rate, 2)
+            "total_trials": total_trials,
+            "conversions": conversions,
+            "conversion_rate": round(conversion_rate, 2),
         }
 
     # ==================== Private Helper Methods ====================
@@ -393,12 +428,12 @@ class AvailabilityService:
         # Convert day_of_week structure to JSON-like format for compatibility.
         # FIX #4: canonical convention is 0=Sunday (matches clean.teacher_availability & matching_engine.py)
         # Do NOT change this mapping — both files must stay in sync.
-        day_map = {0: 'sun', 1: 'mon', 2: 'tue', 3: 'wed', 4: 'thu', 5: 'fri', 6: 'sat'}
+        day_map = {0: "sun", 1: "mon", 2: "tue", 3: "wed", 4: "thu", 5: "fri", 6: "sat"}
         availability = {}
 
         for row in availability_rows:
             day_of_week, start_time, end_time = row
-            day_key = day_map.get(day_of_week, '')
+            day_key = day_map.get(day_of_week, "")
 
             if not day_key:
                 continue
@@ -407,12 +442,12 @@ class AvailabilityService:
             # Convert time values to hour/minute for calculation.
             # PostgreSQL TIME values are returned as HH:MM:SS, so only use the first 2 parts.
             if start_time:
-                start_parts = str(start_time).split(':')
+                start_parts = str(start_time).split(":")
                 start_hour, start_min = int(start_parts[0]), int(start_parts[1])
             else:
                 start_hour, start_min = 9, 0
             if end_time:
-                end_parts = str(end_time).split(':')
+                end_parts = str(end_time).split(":")
                 end_hour, end_min = int(end_parts[0]), int(end_parts[1])
             else:
                 end_hour, end_min = 21, 0
@@ -432,10 +467,10 @@ class AvailabilityService:
             availability[day_key] = day_slots
 
         return {
-            'id': result[0],
-            'name': result[1],
-            'timezone': result[2],
-            'availability': availability
+            "id": result[0],
+            "name": result[1],
+            "timezone": result[2],
+            "availability": availability,
         }
 
     def _get_teacher(self, teacher_id: int) -> Optional[Dict]:
@@ -455,17 +490,10 @@ class AvailabilityService:
         if not result:
             return None
 
-        return {
-            'id': result[0],
-            'name': result[1],
-            'timezone': result[2]
-        }
+        return {"id": result[0], "name": result[1], "timezone": result[2]}
 
     def _get_existing_classes(
-        self,
-        teacher_id: int,
-        start: datetime,
-        end: datetime
+        self, teacher_id: int, start: datetime, end: datetime
     ) -> List[Dict]:
         """Get existing classes for a date range using clean schema"""
         query = """
@@ -485,10 +513,10 @@ class AvailabilityService:
 
         return [
             {
-                'id': r[0],
-                'meeting_start': r[1],
-                'meeting_end': r[2],
-                'student_name': r[3]
+                "id": r[0],
+                "meeting_start": r[1],
+                "meeting_end": r[2],
+                "student_name": r[3],
             }
             for r in results
         ]
@@ -497,12 +525,12 @@ class AvailabilityService:
         self,
         teacher_id: int,
         start: Optional[datetime] = None,
-        end: Optional[datetime] = None
+        end: Optional[datetime] = None,
     ) -> List[Dict]:
         """Get holidays for a teacher using clean schema."""
         if start and end:
             query = """
-                SELECT holiday_date, start_time
+                SELECT holiday_date, full_day, start_time, end_time
                 FROM clean.teacher_holidays
                 WHERE teacher_id = %s
                   AND holiday_date BETWEEN %s::date AND %s::date
@@ -511,7 +539,7 @@ class AvailabilityService:
             cur.execute(query, (teacher_id, start, end))
         else:
             query = """
-                SELECT holiday_date, start_time
+                SELECT holiday_date, full_day, start_time, end_time
                 FROM clean.teacher_holidays
                 WHERE teacher_id = %s
             """
@@ -523,37 +551,92 @@ class AvailabilityService:
 
         return [
             {
-                'holiday_date': r[0],
-                'start_time': r[1]
+                "holiday_date": r[0],
+                "full_day": r[1],
+                "start_time": r[2],
+                "end_time": r[3],
             }
             for r in results
         ]
 
     def _check_holiday_conflict(
-        self,
-        slot_start: datetime,
-        slot_end: datetime,
-        holidays: List[Dict]
+        self, slot_start: datetime, slot_end: datetime, holidays: List[Dict]
     ) -> bool:
         """Check if slot conflicts with any holiday"""
+
+        def _is_truthy(v: Any) -> bool:
+            if isinstance(v, bool):
+                return v
+            if v is None:
+                return False
+            return str(v).strip().lower() in {"true", "t", "1", "yes", "y"}
+
         for holiday in holidays:
-            holiday_date = holiday['holiday_date']
-            holiday_time = holiday.get('start_time')
+            holiday_date = holiday["holiday_date"]
 
             if isinstance(holiday_date, str):
-                holiday_date = datetime.strptime(holiday_date, '%Y-%m-%d').date()
+                holiday_date = datetime.strptime(holiday_date, "%Y-%m-%d").date()
             else:
-                holiday_date = holiday_date if hasattr(holiday_date, 'year') and not isinstance(holiday_date, datetime) else holiday_date.date()
+                holiday_date = (
+                    holiday_date
+                    if hasattr(holiday_date, "year")
+                    and not isinstance(holiday_date, datetime)
+                    else holiday_date.date()
+                )
 
-            # If no start_time is stored, treat the whole date as unavailable.
-            if holiday_time is None:
-                holiday_start = datetime.combine(holiday_date, datetime.min.time()).replace(tzinfo=pytz.UTC)
+            full_day = _is_truthy(holiday.get("full_day"))
+            start_t = holiday.get("start_time")
+            end_t = holiday.get("end_time")
+
+            # Full-day holiday blocks the entire calendar date.
+            if full_day or not start_t or not end_t:
+                holiday_start = datetime.combine(
+                    holiday_date, datetime.min.time()
+                ).replace(tzinfo=pytz.UTC)
                 holiday_end = holiday_start + timedelta(days=1)
             else:
-                time_parts = str(holiday_time).split(':')
-                hh, mm = int(time_parts[0]), int(time_parts[1])
-                holiday_start = datetime.combine(holiday_date, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=pytz.UTC)
-                holiday_end = holiday_start + timedelta(minutes=30)
+                # psycopg2 usually returns datetime.time; CSV may pass strings.
+                if hasattr(start_t, "strftime"):
+                    start_s = start_t.strftime("%H:%M")
+                else:
+                    start_s = str(start_t).strip()[:5]
+                if hasattr(end_t, "strftime"):
+                    end_s = end_t.strftime("%H:%M")
+                else:
+                    end_s = str(end_t).strip()[:5]
+
+                try:
+                    hh_s, mm_s = map(int, start_s.split(":", 1))
+                    hh_e, mm_e = map(int, end_s.split(":", 1))
+                except Exception:
+                    # Defensive fallback: if we can't parse times, treat as full day.
+                    holiday_start = datetime.combine(
+                        holiday_date, datetime.min.time()
+                    ).replace(tzinfo=pytz.UTC)
+                    holiday_end = holiday_start + timedelta(days=1)
+                else:
+                    holiday_start = datetime(
+                        holiday_date.year,
+                        holiday_date.month,
+                        holiday_date.day,
+                        hh_s,
+                        mm_s,
+                        0,
+                        tzinfo=pytz.UTC,
+                    )
+                    holiday_end = datetime(
+                        holiday_date.year,
+                        holiday_date.month,
+                        holiday_date.day,
+                        hh_e,
+                        mm_e,
+                        0,
+                        tzinfo=pytz.UTC,
+                    )
+
+                    # If the range is invalid, treat as full day (prevents false positives).
+                    if holiday_end <= holiday_start:
+                        holiday_end = holiday_start + timedelta(days=1)
 
             # Check if slot overlaps with holiday
             if slot_start < holiday_end and slot_end > holiday_start:
@@ -562,15 +645,12 @@ class AvailabilityService:
         return False
 
     def _check_class_conflict(
-        self,
-        slot_start: datetime,
-        slot_end: datetime,
-        existing_classes: List[Dict]
+        self, slot_start: datetime, slot_end: datetime, existing_classes: List[Dict]
     ) -> Optional[Dict]:
         """Check if slot conflicts with any existing class"""
         for cls in existing_classes:
-            class_start = cls['meeting_start']
-            class_end = cls['meeting_end']
+            class_start = cls["meeting_start"]
+            class_end = cls["meeting_end"]
 
             # Check for overlap using BETWEEN logic
             if slot_start < class_end and slot_end > class_start:
@@ -579,10 +659,7 @@ class AvailabilityService:
         return None
 
     def _check_class_conflict_db(
-        self,
-        teacher_id: int,
-        slot_start: datetime,
-        slot_end: datetime
+        self, teacher_id: int, slot_start: datetime, slot_end: datetime
     ) -> Optional[Dict]:
         """Check for class conflicts using database query"""
         query = """
@@ -605,45 +682,77 @@ class AvailabilityService:
             return None
 
         return {
-            'id': result[0],
-            'meeting_start': result[1],
-            'meeting_end': result[2],
-            'student_name': result[3]
+            "id": result[0],
+            "meeting_start": result[1],
+            "meeting_end": result[2],
+            "student_name": result[3],
         }
 
-    def _get_next_occurrences(self, day: str, time: str, weeks: int) -> List[datetime]:
-        """Calculate next N occurrences of a day and time"""
-        # Parse the time
-        hour, minute = map(int, time.split(':'))
+    def _normalize_day_key(self, day: str) -> Optional[str]:
+        """Normalize day to canonical 3-letter key used by availability ('sun'..'sat')."""
+        if not day:
+            return None
+        d = str(day).strip().lower()
+        aliases = {
+            "sun": "sun",
+            "sunday": "sun",
+            "mon": "mon",
+            "monday": "mon",
+            "tue": "tue",
+            "tues": "tue",
+            "tuesday": "tue",
+            "wed": "wed",
+            "weds": "wed",
+            "wednesday": "wed",
+            "thu": "thu",
+            "thur": "thu",
+            "thurs": "thu",
+            "thursday": "thu",
+            "fri": "fri",
+            "friday": "fri",
+            "sat": "sat",
+            "saturday": "sat",
+        }
+        if d in aliases:
+            return aliases[d]
+        if len(d) >= 3 and d[:3] in aliases:
+            return aliases[d[:3]]
+        return None
 
-        # Get next occurrence of the specified day
+    def _get_next_occurrences(
+        self, day_key: str, time: str, weeks: int
+    ) -> List[datetime]:
+        """Calculate next N UTC occurrences of a canonical day_key ('sun'..'sat') and time."""
+        hour, minute = map(int, time.split(":"))
         today = datetime.now(pytz.UTC)
-        day_map = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-            'friday': 4, 'saturday': 5, 'sunday': 6
+
+        # Python weekday(): 0=Mon..6=Sun → map our canonical keys to python weekday index
+        python_weekday_map = {
+            "mon": 0,
+            "tue": 1,
+            "wed": 2,
+            "thu": 3,
+            "fri": 4,
+            "sat": 5,
+            "sun": 6,
         }
+        target_weekday = python_weekday_map.get(day_key)
+        if target_weekday is None:
+            return []
 
-        target_weekday = day_map.get(day.lower(), 0)
-
-        # Find next occurrence of the target weekday
         days_ahead = target_weekday - today.weekday()
         if days_ahead <= 0:
             days_ahead += 7
 
-        next_date = today + timedelta(days=days_ahead)
-        next_date = next_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-        # Generate N occurrences
-        occurrences = []
-        for i in range(weeks):
-            occurrences.append(next_date + timedelta(weeks=i))
-
-        return occurrences
+        next_date = (today + timedelta(days=days_ahead)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return [next_date + timedelta(weeks=i) for i in range(weeks)]
 
     def _calculate_total_slots(self, availability: Dict) -> int:
         """Calculate total available slots from teacher availability"""
         total_slots = 0
-        days_of_week = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+        days_of_week = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
         for day in days_of_week:
             day_schedule = availability.get(day, {})
@@ -657,6 +766,7 @@ class AvailabilityService:
     def _parse_json(self, json_str: str) -> Dict:
         """Safely parse JSON string"""
         import json
+
         try:
             return json.loads(json_str) if json_str else {}
         except (json.JSONDecodeError, TypeError):

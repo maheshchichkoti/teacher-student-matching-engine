@@ -168,9 +168,109 @@
       <div class="small">Use <code>python export_csv.py</code> to generate local teacher/student CSVs for demo snapshots. This UI still calls the same API so you keep one backend and one deployment.</div>
       <div class="actions">
         <button class="secondary" onclick="window.location='/matching-engine-explainer'">Open Explainer</button>
+        <button class="secondary" onclick="refreshCsvHealth()">CSV Data Health</button>
       </div>
       <div id="status" class="small" style="margin-top:10px;"></div>
       <div class="summary" id="summary"></div>
+    </div>
+
+    <div class="grid" style="margin-top:20px;">
+      <div class="card">
+        <h2>Add Dummy Teacher (CSV mode)</h2>
+        <div class="hint">Adds an in-memory teacher for demo experimentation (no DB writes). Works only when the backend runs with <code>DATA_SOURCE=csv</code>.</div>
+        <label>Teacher Name</label>
+        <input id="dummyTeacherName" placeholder="e.g. Demo Teacher" />
+        <div class="row">
+          <div>
+            <label>Teaching Languages</label>
+            <input id="dummyTeachingLangs" value="English" />
+          </div>
+          <div>
+            <label>Languages Spoken</label>
+            <input id="dummySpokenLangs" placeholder="Hebrew, Arabic" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Age Min</label>
+            <input id="dummyAgeMin" type="number" value="5" />
+          </div>
+          <div>
+            <label>Age Max</label>
+            <input id="dummyAgeMax" type="number" value="18" />
+          </div>
+        </div>
+        <label>Teacher Tags</label>
+        <input id="dummyTeacherTags" placeholder="kids_friendly, beginner_friendly" />
+        <div class="row">
+          <div>
+            <label>Availability Days</label>
+            <input id="dummyAvailabilityDays" value="Sunday, Tuesday" />
+          </div>
+          <div>
+            <label>Availability Start</label>
+            <input id="dummyAvailabilityFrom" value="16:00" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Availability End</label>
+            <input id="dummyAvailabilityTo" value="21:00" />
+          </div>
+          <div></div>
+        </div>
+        <button onclick="addDummyTeacher()">Add Dummy Teacher</button>
+      </div>
+
+      <div class="card">
+        <h2>Add Dummy Student (CSV mode)</h2>
+        <div class="hint">Adds an in-memory student so you can test both “old” and “new” student flows without relying on Postgres completeness.</div>
+        <label>Student Name</label>
+        <input id="dummyStudentName" placeholder="e.g. Demo Student" />
+        <div class="row">
+          <div>
+            <label>Age</label>
+            <input id="dummyStudentAge" type="number" />
+          </div>
+          <div>
+            <label>English Level</label>
+            <select id="dummyStudentLevel">
+              <option value="A1">A1</option>
+              <option value="A2">A2</option>
+              <option value="B1">B1</option>
+              <option value="B2">B2</option>
+              <option value="C1">C1</option>
+              <option value="C2">C2</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Native Language</label>
+            <input id="dummyStudentNative" placeholder="Hebrew" />
+          </div>
+          <div>
+            <label>Requires Native Teacher</label>
+            <select id="dummyStudentRequiresNative">
+              <option value="false">false</option>
+              <option value="true">true</option>
+            </select>
+          </div>
+        </div>
+        <label>Preferred Days</label>
+        <input id="dummyStudentDays" placeholder="Sunday, Tuesday" />
+        <div class="row">
+          <div>
+            <label>Time From</label>
+            <input id="dummyStudentFrom" value="16:00" />
+          </div>
+          <div>
+            <label>Time To</label>
+            <input id="dummyStudentTo" value="21:00" />
+          </div>
+        </div>
+        <button onclick="addDummyStudent()">Add Dummy Student</button>
+      </div>
     </div>
 
     <div class="results" id="results"></div>
@@ -253,6 +353,69 @@
         student_tags: parseList(document.getElementById('tags').value),
         student_goals: parseList(document.getElementById('goals').value)
       });
+    }
+
+    async function refreshCsvHealth() {
+      const status = document.getElementById('status');
+      status.innerHTML = 'Checking CSV data health ...';
+      try {
+        const res = await fetch('/demo/data-health');
+        const data = await res.json();
+        status.innerHTML = `<span class="ok">Data source: ${data.data_source}</span>` + (data.notes && data.notes.length ? `<div class="small err" style="margin-top:8px;">${data.notes.join('<br/>')}</div>` : '');
+      } catch (e) {
+        status.innerHTML = `<span class="err">${e.message}</span>`;
+      }
+    }
+
+    async function addDummyTeacher() {
+      const payload = {
+        dummy_teacher: {
+          full_name: document.getElementById('dummyTeacherName').value,
+          teaching_languages: parseList(document.getElementById('dummyTeachingLangs').value),
+          languages_spoken: parseList(document.getElementById('dummySpokenLangs').value),
+          age_min: Number(document.getElementById('dummyAgeMin').value),
+          age_max: Number(document.getElementById('dummyAgeMax').value),
+          teacher_tags: parseList(document.getElementById('dummyTeacherTags').value),
+          availability_days: parseList(document.getElementById('dummyAvailabilityDays').value),
+          availability_start_time: document.getElementById('dummyAvailabilityFrom').value,
+          availability_end_time: document.getElementById('dummyAvailabilityTo').value,
+          trial_enabled: true,
+          max_students_capacity: 20,
+          trial_priority: 'normal'
+        },
+        student_age: 12,
+        english_level: 'A1',
+        preferred_days: ['Sunday'],
+        preferred_time_from: '16:00',
+        preferred_time_to: '21:00',
+        mode: 'subscription'
+      };
+      await callMatch(payload);
+    }
+
+    async function addDummyStudent() {
+      const payload = {
+        dummy_student: {
+          full_name: document.getElementById('dummyStudentName').value,
+          student_age: Number(document.getElementById('dummyStudentAge').value),
+          cefr_level: document.getElementById('dummyStudentLevel').value,
+          native_language: document.getElementById('dummyStudentNative').value,
+          requires_native_language_teacher: document.getElementById('dummyStudentRequiresNative').value === 'true',
+          preferred_days: parseList(document.getElementById('dummyStudentDays').value),
+          preferred_time_start: document.getElementById('dummyStudentFrom').value,
+          preferred_time_end: document.getElementById('dummyStudentTo').value,
+          sessions_per_week: 1
+        },
+        student_age: Number(document.getElementById('dummyStudentAge').value),
+        english_level: document.getElementById('dummyStudentLevel').value,
+        native_language: document.getElementById('dummyStudentNative').value,
+        requires_native_language_teacher: document.getElementById('dummyStudentRequiresNative').value === 'true',
+        preferred_days: parseList(document.getElementById('dummyStudentDays').value),
+        preferred_time_from: document.getElementById('dummyStudentFrom').value,
+        preferred_time_to: document.getElementById('dummyStudentTo').value,
+        mode: 'trial'
+      };
+      await callMatch(payload);
     }
   </script>
 </body>
